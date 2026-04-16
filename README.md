@@ -2,8 +2,6 @@
 
 ![Echo Audio Converter](EAC_Banner.svg)
 
-*Because Everything Else Is A Pain In The Ass*
-
 ## Features
 
 - **Batch Processing** – Queue multiple files, convert all at once
