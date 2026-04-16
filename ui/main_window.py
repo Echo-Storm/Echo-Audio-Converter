@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QLineEdit, QFileDialog,
     QTableWidget, QTableWidgetItem, QProgressBar, QMessageBox,
     QHeaderView, QFrame, QSplitter, QStatusBar, QAbstractItemView,
-    QTextEdit, QMenu, QSizePolicy, QStyledItemDelegate,
+    QTextEdit, QMenu, QSizePolicy, QStyledItemDelegate, QCheckBox,
 )
 from PyQt6.QtCore import Qt, QSettings, QTimer, QSize
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut, QFont, QColor, QPixmap, QPainter
@@ -174,6 +174,12 @@ QLineEdit:focus {
     border-color: #7cb342;
 }
 
+QLineEdit:disabled {
+    background-color: #1a1a1a;
+    border-color: #353535;
+    color: #505050;
+}
+
 QTableWidget {
     background-color: #1e1e1e;
     alternate-background-color: #242424;
@@ -293,12 +299,43 @@ QMenu {
 QMenu::item:selected {
     background-color: #3e5a2e;
 }
+
+QCheckBox {
+    color: #a0a0a0;
+    spacing: 6px;
+}
+
+QCheckBox::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #4a4a4a;
+    border-radius: 2px;
+    background-color: #252525;
+}
+
+QCheckBox::indicator:hover {
+    border-color: #7cb342;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #7cb342;
+    border-color: #7cb342;
+}
+
+QCheckBox:disabled {
+    color: #505050;
+}
+
+QCheckBox::indicator:disabled {
+    background-color: #1a1a1a;
+    border-color: #353535;
+}
 """
 
 
 class MainWindow(QMainWindow):
     APP_NAME = "Echo Audio Converter"
-    APP_VERSION = "0.1.0"
+    APP_VERSION = "0.3.0"
     
     def __init__(self):
         super().__init__()
@@ -460,6 +497,22 @@ class MainWindow(QMainWindow):
         
         left_panel.addSpacing(10)
         
+        # Options section
+        options_label = QLabel("OPTIONS")
+        options_label.setObjectName("titleLabel")
+        left_panel.addWidget(options_label)
+        
+        self.recursive_checkbox = QCheckBox("Include subdirectories")
+        self.recursive_checkbox.setToolTip("When adding a folder, also scan all subdirectories for audio files")
+        left_panel.addWidget(self.recursive_checkbox)
+        
+        self.delete_source_checkbox = QCheckBox("Delete source after conversion")
+        self.delete_source_checkbox.setToolTip("Delete the original file after successful conversion (irreversible!)")
+        self.delete_source_checkbox.setStyleSheet("QCheckBox { color: #c08080; }")
+        left_panel.addWidget(self.delete_source_checkbox)
+        
+        left_panel.addSpacing(10)
+        
         # Output section
         output_label = QLabel("OUTPUT")
         output_label.setObjectName("titleLabel")
@@ -485,15 +538,22 @@ class MainWindow(QMainWindow):
         
         # Output folder row
         folder_layout = QHBoxLayout()
-        folder_layout.addWidget(QLabel("Folder:"))
+        self.folder_label = QLabel("Folder:")
+        folder_layout.addWidget(self.folder_label)
         self.output_dir_edit = QLineEdit()
         self.output_dir_edit.setPlaceholderText("Same as source")
         folder_layout.addWidget(self.output_dir_edit)
-        browse_btn = QPushButton("...")
-        browse_btn.setFixedWidth(30)
-        browse_btn.clicked.connect(self._on_browse_output)
-        folder_layout.addWidget(browse_btn)
+        self.browse_btn = QPushButton("...")
+        self.browse_btn.setFixedWidth(30)
+        self.browse_btn.clicked.connect(self._on_browse_output)
+        folder_layout.addWidget(self.browse_btn)
         left_panel.addLayout(folder_layout)
+        
+        # Save to original directory checkbox
+        self.save_to_source_checkbox = QCheckBox("Save to original directory")
+        self.save_to_source_checkbox.setToolTip("Save converted files alongside the originals (useful for batch subdirectory conversions)")
+        self.save_to_source_checkbox.stateChanged.connect(self._on_save_to_source_changed)
+        left_panel.addWidget(self.save_to_source_checkbox)
         
         left_panel.addSpacing(10)
         
@@ -603,11 +663,26 @@ class MainWindow(QMainWindow):
         last_output = self.settings.value("last_output_dir")
         if last_output:
             self.output_dir_edit.setText(last_output)
+        
+        # Load checkbox states (default to False for safety)
+        recursive = self.settings.value("recursive_subdirs", False, type=bool)
+        self.recursive_checkbox.setChecked(recursive)
+        
+        save_to_source = self.settings.value("save_to_source", False, type=bool)
+        self.save_to_source_checkbox.setChecked(save_to_source)
+        # Trigger UI update to disable/enable folder controls
+        self._on_save_to_source_changed(save_to_source)
+        
+        # Never auto-restore delete_source - too dangerous, user must explicitly enable each session
+        self.delete_source_checkbox.setChecked(False)
     
     def _save_settings(self):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("last_format", self.format_combo.currentText())
         self.settings.setValue("last_output_dir", self.output_dir_edit.text())
+        self.settings.setValue("recursive_subdirs", self.recursive_checkbox.isChecked())
+        self.settings.setValue("save_to_source", self.save_to_source_checkbox.isChecked())
+        # Note: delete_source is intentionally NOT saved - must be enabled manually each session
     
     def closeEvent(self, event):
         self._save_settings()
@@ -693,25 +768,47 @@ class MainWindow(QMainWindow):
     def _on_add_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder")
         if folder:
-            files = [str(f) for f in Path(folder).iterdir() if f.is_file() and is_supported_input(str(f))]
+            base_path = Path(folder)
+            recursive = self.recursive_checkbox.isChecked()
+            
+            if recursive:
+                # Recursive: walk all subdirectories
+                files = [
+                    str(f) for f in base_path.rglob("*")
+                    if f.is_file() and is_supported_input(str(f))
+                ]
+            else:
+                # Shallow: only immediate children
+                files = [
+                    str(f) for f in base_path.iterdir()
+                    if f.is_file() and is_supported_input(str(f))
+                ]
+            
             if files:
-                self._add_files_to_queue(files)
+                self._add_files_to_queue(files, base_dir=str(base_path) if recursive else None)
             else:
                 QMessageBox.information(self, "No Audio Files", "No supported audio files found.")
     
-    def _add_files_to_queue(self, files: list):
+    def _add_files_to_queue(self, files: list, base_dir: str = None):
         format_name = self.format_combo.currentText()
         quality = self.quality_combo.currentText()
         fmt_settings = get_format_settings(format_name)
         extension = fmt_settings["extension"]
-        output_dir = self.output_dir_edit.text().strip()
+        
+        # Determine output directory strategy
+        save_to_source = self.save_to_source_checkbox.isChecked()
+        output_dir = self.output_dir_edit.text().strip() if not save_to_source else ""
         
         added = 0
         skipped = 0
         
         for filepath in files:
+            # If save_to_source is checked (or output_dir is empty), use source file's directory
             file_output_dir = output_dir if output_dir else str(Path(filepath).parent)
-            job = self.batch_processor.add_job(filepath, file_output_dir, format_name, quality, extension)
+            job = self.batch_processor.add_job(
+                filepath, file_output_dir, format_name, quality, extension,
+                base_dir=base_dir
+            )
             if job:
                 added += 1
             else:
@@ -731,16 +828,34 @@ class MainWindow(QMainWindow):
     
     def dropEvent(self, event):
         files = []
+        base_dir = None
+        recursive = self.recursive_checkbox.isChecked()
+        dir_count = 0
+        single_dir_path = None
+        
         for url in event.mimeData().urls():
             path = url.toLocalFile()
             if os.path.isfile(path) and is_supported_input(path):
                 files.append(path)
             elif os.path.isdir(path):
-                for f in Path(path).iterdir():
-                    if f.is_file() and is_supported_input(str(f)):
-                        files.append(str(f))
+                dir_count += 1
+                dir_path = Path(path)
+                single_dir_path = str(dir_path)
+                if recursive:
+                    for f in dir_path.rglob("*"):
+                        if f.is_file() and is_supported_input(str(f)):
+                            files.append(str(f))
+                else:
+                    for f in dir_path.iterdir():
+                        if f.is_file() and is_supported_input(str(f)):
+                            files.append(str(f))
+        
+        # Only use base_dir for relative path display if exactly one directory was dropped recursively
+        if recursive and dir_count == 1 and single_dir_path:
+            base_dir = single_dir_path
+        
         if files:
-            self._add_files_to_queue(files)
+            self._add_files_to_queue(files, base_dir=base_dir)
     
     def _on_format_changed(self, format_name: str):
         self.quality_combo.clear()
@@ -755,12 +870,27 @@ class MainWindow(QMainWindow):
         if folder:
             self.output_dir_edit.setText(folder)
     
+    def _on_save_to_source_changed(self, state):
+        """Enable/disable output folder controls based on checkbox state."""
+        is_checked = bool(state)
+        self.output_dir_edit.setEnabled(not is_checked)
+        self.browse_btn.setEnabled(not is_checked)
+        self.folder_label.setEnabled(not is_checked)
+        
+        if is_checked:
+            # Visual feedback: gray out and show placeholder
+            self.output_dir_edit.setPlaceholderText("Using source directories")
+        else:
+            self.output_dir_edit.setPlaceholderText("Same as source")
+    
     def _refresh_queue_table(self):
         self.queue_table.setRowCount(len(self.batch_processor.jobs))
         
         for row, job in enumerate(self.batch_processor.jobs):
-            # Filename
-            self.queue_table.setItem(row, 0, QTableWidgetItem(job.input_filename))
+            # Filename (or relative path if from subdirectory scan)
+            file_item = QTableWidgetItem(job.display_name)
+            file_item.setToolTip(job.input_path)  # Full path on hover
+            self.queue_table.setItem(row, 0, file_item)
             self.queue_table.setItem(row, 1, QTableWidgetItem(job.format_name))
             self.queue_table.setItem(row, 2, QTableWidgetItem(job.quality_option))
             
@@ -814,12 +944,32 @@ class MainWindow(QMainWindow):
         if pending == 0:
             return
         
+        delete_source = self.delete_source_checkbox.isChecked()
+        
+        # Confirm if delete source is enabled - this is irreversible
+        if delete_source:
+            reply = QMessageBox.warning(
+                self,
+                "Confirm Delete Source Files",
+                f"You have 'Delete source after conversion' enabled.\n\n"
+                f"This will PERMANENTLY DELETE {pending} original file(s) after successful conversion.\n\n"
+                f"This action cannot be undone. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        
         self.convert_btn.setEnabled(False)
         self.cancel_btn.setVisible(True)
         self.overall_progress.setVisible(True)
         self.overall_progress.setValue(0)
         
-        self.batch_worker = BatchWorker(self.ffmpeg, self.batch_processor, self)
+        self.batch_worker = BatchWorker(
+            self.ffmpeg, self.batch_processor,
+            delete_source=delete_source,
+            parent=self
+        )
         self.batch_worker.job_started.connect(self._on_job_started)
         self.batch_worker.job_progress.connect(self._on_job_progress)
         self.batch_worker.job_finished.connect(self._on_job_finished)

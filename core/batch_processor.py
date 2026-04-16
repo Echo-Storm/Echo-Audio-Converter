@@ -26,6 +26,7 @@ class ConversionJob:
     output_path: str
     format_name: str
     quality_option: str
+    base_dir: Optional[str] = None  # For relative path display when loading from subdirs
     status: JobStatus = JobStatus.PENDING
     progress: float = 0.0
     error_message: Optional[str] = None
@@ -34,6 +35,18 @@ class ConversionJob:
     @property
     def input_filename(self) -> str:
         return os.path.basename(self.input_path)
+    
+    @property
+    def display_name(self) -> str:
+        """Returns relative path if base_dir is set, otherwise just filename."""
+        if self.base_dir:
+            try:
+                rel_path = os.path.relpath(self.input_path, self.base_dir)
+                return rel_path
+            except ValueError:
+                # Different drives on Windows
+                return self.input_filename
+        return self.input_filename
     
     @property
     def output_filename(self) -> str:
@@ -61,6 +74,7 @@ class BatchProcessor:
         format_name: str,
         quality_option: str,
         output_extension: str,
+        base_dir: Optional[str] = None,
     ) -> Optional[ConversionJob]:
         if self.is_duplicate(input_path):
             return None
@@ -81,6 +95,7 @@ class BatchProcessor:
             output_path=output_path,
             format_name=format_name,
             quality_option=quality_option,
+            base_dir=base_dir,
         )
         
         self.jobs.append(job)

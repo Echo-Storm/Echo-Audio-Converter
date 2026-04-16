@@ -40,10 +40,12 @@ class BatchWorker(QThread):
     job_finished = pyqtSignal(str, bool, str)
     batch_finished = pyqtSignal(int, int, int)
     
-    def __init__(self, ffmpeg: FFmpegWrapper, batch_processor: BatchProcessor, parent=None):
+    def __init__(self, ffmpeg: FFmpegWrapper, batch_processor: BatchProcessor, 
+                 delete_source: bool = False, parent=None):
         super().__init__(parent)
         self.ffmpeg = ffmpeg
         self.batch_processor = batch_processor
+        self.delete_source = delete_source
         self._cancel_requested = False
     
     def request_cancel(self):
@@ -53,6 +55,7 @@ class BatchWorker(QThread):
     
     def run(self):
         from core.logger import get_logger
+        import os
         log = get_logger()
         
         self.batch_processor._is_processing = True
@@ -61,10 +64,13 @@ class BatchWorker(QThread):
         completed = 0
         failed = 0
         cancelled = 0
+        deleted_sources = 0
         
         try:
             pending_jobs = self.batch_processor.get_pending_jobs()
             log.info(f"Starting batch conversion: {len(pending_jobs)} files")
+            if self.delete_source:
+                log.info("Delete source mode enabled - originals will be removed after successful conversion")
             
             for job in pending_jobs:
                 if self._cancel_requested:
@@ -95,6 +101,19 @@ class BatchWorker(QThread):
                     job.status = JobStatus.COMPLETE
                     job.progress = 1.0
                     completed += 1
+                    
+                    # Delete source file if enabled and output verified
+                    if self.delete_source:
+                        if os.path.exists(job.output_path) and os.path.getsize(job.output_path) > 0:
+                            try:
+                                os.remove(job.input_path)
+                                deleted_sources += 1
+                                log.info(f"Deleted source: {job.input_filename}")
+                            except OSError as e:
+                                log.warning(f"Failed to delete source {job.input_filename}: {e}")
+                        else:
+                            log.warning(f"Output not verified, keeping source: {job.input_filename}")
+                    
                     self.job_finished.emit(job.id, True, "Complete")
                     
                 except FFmpegError as e:
@@ -118,6 +137,8 @@ class BatchWorker(QThread):
         finally:
             self.batch_processor._is_processing = False
             self.batch_processor._cancel_requested = False
+            if self.delete_source and deleted_sources > 0:
+                log.info(f"Deleted {deleted_sources} source file(s)")
             log.info(f"Batch complete: {completed} done, {failed} failed, {cancelled} cancelled")
         
         self.batch_finished.emit(completed, failed, cancelled)

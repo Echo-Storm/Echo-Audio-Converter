@@ -9,11 +9,15 @@
 ## Features
 
 - **Batch Processing** – Queue multiple files, convert all at once
+- **Recursive Folder Scanning** – Include subdirectories when adding folders
+- **Save to Original Directory** – Keep converted files alongside sources (grays out output folder)
+- **Delete Source Option** – Remove original files after successful conversion
+- **Directory-Aware Queue** – Shows relative paths when scanning subdirectories
 - **Metadata Preservation** – Artist, album, title, track number, year copied to output
 - **Album Art** – Preserved for supported formats (FLAC, M4A, MP3, ALAC)
 - **Format Support** – MP3, FLAC, WAV, AAC, OGG Vorbis, OPUS, M4A, ALAC
 - **FFmpeg Auto-Update** – Downloads latest build from gyan.dev
-- **Drag & Drop** – Files or folders
+- **Drag & Drop** – Files or folders (respects recursive setting)
 - **Duplicate Detection** – Won't queue the same file twice
 - **Portable** – FFmpeg lives in the app folder, no system install needed
 
@@ -66,6 +70,14 @@ Log file saved to `EAC_Log.txt` in app folder.
 **Note:** WAV doesn't support embedded metadata – it's a format limitation, not a bug.
 
 ## Changelog
+
+### v0.3.0
+- **Include Subdirectories** – New checkbox to recursively scan folders for audio files
+- **Save to Original Directory** – New checkbox to save converted files alongside sources; disables output folder field when checked
+- **Delete Source After Conversion** – New checkbox to remove originals after successful conversion (requires confirmation)
+- **Directory-Aware Queue** – Queue now shows relative paths when files come from subdirectory scans, with full path in tooltip
+- **Safety Features** – Delete source requires confirmation dialog; setting is never saved (must enable manually each session)
+- Drag & drop now respects the recursive subdirectories setting
 
 ### v0.2.0
 - New industrial dark theme UI
