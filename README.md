@@ -9,6 +9,7 @@
 ## Features
 
 - **Batch Processing** – Queue multiple files, convert all at once
+- **Source Info Display** – Queue shows source format, bitrate, and duration for each file
 - **Recursive Folder Scanning** – Include subdirectories when adding folders
 - **Save to Original Directory** – Keep converted files alongside sources (grays out output folder)
 - **Delete Source Option** – Remove original files after successful conversion
@@ -72,6 +73,7 @@ Log file saved to `EAC_Log.txt` in app folder.
 ## Changelog
 
 ### v0.3.0
+- **Source Info Columns** – Queue now displays source format, bitrate, and duration; hover over bitrate for detailed info (sample rate, channels)
 - **Include Subdirectories** – New checkbox to recursively scan folders for audio files
 - **Save to Original Directory** – New checkbox to save converted files alongside sources; disables output folder field when checked
 - **Delete Source After Conversion** – New checkbox to remove originals after successful conversion (requires confirmation)

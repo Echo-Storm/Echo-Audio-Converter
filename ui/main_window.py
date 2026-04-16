@@ -533,6 +533,7 @@ class MainWindow(QMainWindow):
         quality_layout.addWidget(QLabel("Quality:"))
         self.quality_combo = ArrowComboBox()
         self.quality_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.quality_combo.currentTextChanged.connect(self._on_quality_changed)
         quality_layout.addWidget(self.quality_combo)
         left_panel.addLayout(quality_layout)
         
@@ -583,13 +584,19 @@ class MainWindow(QMainWindow):
         right_panel.setSpacing(8)
         
         self.queue_table = QTableWidget()
-        self.queue_table.setColumnCount(5)
-        self.queue_table.setHorizontalHeaderLabels(["File", "Format", "Quality", "Status", "Progress"])
-        self.queue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.queue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.queue_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.queue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.queue_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.queue_table.setColumnCount(8)
+        self.queue_table.setHorizontalHeaderLabels([
+            "Src", "Bitrate", "Time", "File", "Output", "Quality", "Status", "%"
+        ])
+        # Column resize modes
+        self.queue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # Src
+        self.queue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Bitrate
+        self.queue_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Time
+        self.queue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)  # File
+        self.queue_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Output
+        self.queue_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Quality
+        self.queue_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Status
+        self.queue_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # %
         self.queue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.queue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.queue_table.setAlternatingRowColors(True)
@@ -803,11 +810,39 @@ class MainWindow(QMainWindow):
         skipped = 0
         
         for filepath in files:
+            # Probe file for source info
+            source_format = None
+            source_bitrate = None
+            source_duration = None
+            source_sample_rate = None
+            source_channels = None
+            
+            if self.ffmpeg.is_available():
+                try:
+                    probe = self.ffmpeg.probe_file(filepath)
+                    source_duration = probe.get("duration")
+                    source_bitrate = probe.get("bit_rate")
+                    
+                    # Get codec info from audio stream
+                    audio_stream = probe.get("audio_stream")
+                    if audio_stream:
+                        codec = audio_stream.get("codec_name", "").upper()
+                        source_format = self._friendly_codec_name(codec)
+                        source_sample_rate = int(audio_stream.get("sample_rate", 0)) or None
+                        source_channels = audio_stream.get("channels")
+                except Exception as e:
+                    self.logger.debug(f"Could not probe {filepath}: {e}")
+            
             # If save_to_source is checked (or output_dir is empty), use source file's directory
             file_output_dir = output_dir if output_dir else str(Path(filepath).parent)
             job = self.batch_processor.add_job(
                 filepath, file_output_dir, format_name, quality, extension,
-                base_dir=base_dir
+                base_dir=base_dir,
+                source_format=source_format,
+                source_bitrate=source_bitrate,
+                source_duration=source_duration,
+                source_sample_rate=source_sample_rate,
+                source_channels=source_channels,
             )
             if job:
                 added += 1
@@ -821,6 +856,28 @@ class MainWindow(QMainWindow):
             msg += f", {skipped} skipped"
         self.status_bar.showMessage(msg, 3000)
         self.logger.info(f"Added {added} files, skipped {skipped} duplicates")
+    
+    def _friendly_codec_name(self, codec: str) -> str:
+        """Convert ffprobe codec name to friendly display name."""
+        codec_map = {
+            "MP3": "MP3",
+            "FLAC": "FLAC",
+            "VORBIS": "OGG",
+            "OPUS": "OPUS",
+            "AAC": "AAC",
+            "ALAC": "ALAC",
+            "PCM_S16LE": "WAV",
+            "PCM_S24LE": "WAV",
+            "PCM_S32LE": "WAV",
+            "PCM_F32LE": "WAV",
+            "WMAV2": "WMA",
+            "WMAPRO": "WMA",
+            "APE": "APE",
+            "WAVPACK": "WV",
+            "TAK": "TAK",
+            "MPC": "MPC",
+        }
+        return codec_map.get(codec, codec[:6] if codec else "?")
     
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -864,6 +921,31 @@ class MainWindow(QMainWindow):
         default = get_default_quality(format_name)
         if default in options:
             self.quality_combo.setCurrentText(default)
+        
+        # Update pending jobs with new format
+        self._update_pending_jobs_settings()
+    
+    def _on_quality_changed(self, quality_option: str):
+        """Update pending jobs when quality selection changes."""
+        self._update_pending_jobs_settings()
+    
+    def _update_pending_jobs_settings(self):
+        """Apply current format/quality settings to all pending jobs."""
+        if self.batch_processor.pending_count == 0:
+            return
+        
+        format_name = self.format_combo.currentText()
+        quality = self.quality_combo.currentText()
+        if not format_name or not quality:
+            return
+        
+        fmt_settings = get_format_settings(format_name)
+        if not fmt_settings:
+            return
+        
+        extension = fmt_settings["extension"]
+        self.batch_processor.update_pending_jobs(format_name, quality, extension)
+        self._refresh_queue_table()
     
     def _on_browse_output(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
@@ -887,14 +969,48 @@ class MainWindow(QMainWindow):
         self.queue_table.setRowCount(len(self.batch_processor.jobs))
         
         for row, job in enumerate(self.batch_processor.jobs):
-            # Filename (or relative path if from subdirectory scan)
+            # Source format (col 0)
+            src_item = QTableWidgetItem(job.source_format or "?")
+            src_item.setForeground(QColor("#808080"))
+            self.queue_table.setItem(row, 0, src_item)
+            
+            # Source bitrate (col 1) - with detailed tooltip
+            bitrate_item = QTableWidgetItem(job.bitrate_display)
+            bitrate_item.setForeground(QColor("#808080"))
+            # Build detailed source info tooltip
+            source_info_parts = []
+            if job.source_format:
+                source_info_parts.append(f"Format: {job.source_format}")
+            if job.source_bitrate:
+                source_info_parts.append(f"Bitrate: {job.source_bitrate // 1000} kbps")
+            if job.source_sample_rate:
+                source_info_parts.append(f"Sample rate: {job.source_sample_rate} Hz")
+            if job.source_channels:
+                ch_str = "Mono" if job.source_channels == 1 else "Stereo" if job.source_channels == 2 else f"{job.source_channels}ch"
+                source_info_parts.append(f"Channels: {ch_str}")
+            if job.source_duration:
+                source_info_parts.append(f"Duration: {job.duration_display}")
+            if source_info_parts:
+                bitrate_item.setToolTip("\n".join(source_info_parts))
+            self.queue_table.setItem(row, 1, bitrate_item)
+            
+            # Duration (col 2)
+            time_item = QTableWidgetItem(job.duration_display)
+            time_item.setForeground(QColor("#808080"))
+            self.queue_table.setItem(row, 2, time_item)
+            
+            # Filename (col 3) - or relative path if from subdirectory scan
             file_item = QTableWidgetItem(job.display_name)
             file_item.setToolTip(job.input_path)  # Full path on hover
-            self.queue_table.setItem(row, 0, file_item)
-            self.queue_table.setItem(row, 1, QTableWidgetItem(job.format_name))
-            self.queue_table.setItem(row, 2, QTableWidgetItem(job.quality_option))
+            self.queue_table.setItem(row, 3, file_item)
             
-            # Status with color
+            # Output format (col 4)
+            self.queue_table.setItem(row, 4, QTableWidgetItem(job.format_name))
+            
+            # Target quality (col 5)
+            self.queue_table.setItem(row, 5, QTableWidgetItem(job.quality_option))
+            
+            # Status with color (col 6)
             status_item = QTableWidgetItem(job.status.value.title())
             if job.status == JobStatus.COMPLETE:
                 status_item.setForeground(QColor("#7cb342"))
@@ -904,11 +1020,11 @@ class MainWindow(QMainWindow):
                 status_item.setForeground(QColor("#4a9fd4"))
             elif job.status == JobStatus.CANCELLED:
                 status_item.setForeground(QColor("#808080"))
-            self.queue_table.setItem(row, 3, status_item)
+            self.queue_table.setItem(row, 6, status_item)
             
-            # Progress
+            # Progress (col 7)
             progress_text = f"{int(job.progress * 100)}%" if job.progress > 0 else ""
-            self.queue_table.setItem(row, 4, QTableWidgetItem(progress_text))
+            self.queue_table.setItem(row, 7, QTableWidgetItem(progress_text))
         
         summary = self.batch_processor.get_summary()
         parts = []

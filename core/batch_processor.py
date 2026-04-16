@@ -27,6 +27,13 @@ class ConversionJob:
     format_name: str
     quality_option: str
     base_dir: Optional[str] = None  # For relative path display when loading from subdirs
+    # Source file info (populated from ffprobe)
+    source_format: Optional[str] = None  # e.g., "FLAC", "MP3"
+    source_bitrate: Optional[int] = None  # bits per second
+    source_duration: Optional[float] = None  # seconds
+    source_sample_rate: Optional[int] = None  # Hz
+    source_channels: Optional[int] = None
+    # Job state
     status: JobStatus = JobStatus.PENDING
     progress: float = 0.0
     error_message: Optional[str] = None
@@ -51,6 +58,29 @@ class ConversionJob:
     @property
     def output_filename(self) -> str:
         return os.path.basename(self.output_path)
+    
+    @property
+    def bitrate_display(self) -> str:
+        """Human-readable bitrate string."""
+        if self.source_bitrate is None:
+            return ""
+        kbps = self.source_bitrate // 1000
+        if kbps >= 1000:
+            return f"{kbps // 1000}.{(kbps % 1000) // 100}M"
+        return f"{kbps}k"
+    
+    @property
+    def duration_display(self) -> str:
+        """Human-readable duration string (M:SS or H:MM:SS)."""
+        if self.source_duration is None or self.source_duration <= 0:
+            return ""
+        total_seconds = int(self.source_duration)
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes}:{seconds:02d}"
 
 
 class BatchProcessor:
@@ -75,6 +105,11 @@ class BatchProcessor:
         quality_option: str,
         output_extension: str,
         base_dir: Optional[str] = None,
+        source_format: Optional[str] = None,
+        source_bitrate: Optional[int] = None,
+        source_duration: Optional[float] = None,
+        source_sample_rate: Optional[int] = None,
+        source_channels: Optional[int] = None,
     ) -> Optional[ConversionJob]:
         if self.is_duplicate(input_path):
             return None
@@ -96,6 +131,11 @@ class BatchProcessor:
             format_name=format_name,
             quality_option=quality_option,
             base_dir=base_dir,
+            source_format=source_format,
+            source_bitrate=source_bitrate,
+            source_duration=source_duration,
+            source_sample_rate=source_sample_rate,
+            source_channels=source_channels,
         )
         
         self.jobs.append(job)
@@ -120,6 +160,30 @@ class BatchProcessor:
     
     def get_pending_jobs(self) -> List[ConversionJob]:
         return [job for job in self.jobs if job.status == JobStatus.PENDING]
+    
+    def update_pending_jobs(self, format_name: str, quality_option: str, extension: str):
+        """Update all pending jobs with new format/quality settings."""
+        for job in self.jobs:
+            if job.status != JobStatus.PENDING:
+                continue
+            
+            job.format_name = format_name
+            job.quality_option = quality_option
+            
+            # Recompute output path with new extension
+            input_name = Path(job.input_path).stem
+            output_dir = str(Path(job.output_path).parent)
+            new_output_filename = f"{input_name}{extension}"
+            new_output_path = str(Path(output_dir) / new_output_filename)
+            
+            # Handle collision with existing files
+            counter = 1
+            while os.path.exists(new_output_path) and new_output_path != job.output_path:
+                new_output_filename = f"{input_name}_{counter}{extension}"
+                new_output_path = str(Path(output_dir) / new_output_filename)
+                counter += 1
+            
+            job.output_path = new_output_path
     
     def get_job_by_id(self, job_id: str) -> Optional[ConversionJob]:
         for job in self.jobs:
