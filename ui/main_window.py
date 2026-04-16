@@ -8,14 +8,14 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QFileDialog,
     QTableWidget, QTableWidgetItem, QProgressBar, QMessageBox,
-    QHeaderView, QFrame, QSplitter, QStatusBar, QAbstractItemView,
-    QTextEdit, QMenu, QSizePolicy, QStyledItemDelegate, QCheckBox,
+    QHeaderView, QFrame, QStatusBar, QAbstractItemView,
+    QTextEdit, QMenu, QSizePolicy, QCheckBox,
 )
-from PyQt6.QtCore import Qt, QSettings, QTimer, QSize
-from PyQt6.QtGui import QAction, QKeySequence, QShortcut, QFont, QColor, QPixmap, QPainter
+from PyQt6.QtCore import Qt, QSettings, QTimer
+from PyQt6.QtGui import QAction, QKeySequence, QShortcut, QColor, QPainter
 
 from core import (
     FFmpegWrapper, FFmpegUpdater, BatchProcessor, JobStatus,
@@ -335,7 +335,7 @@ QCheckBox::indicator:disabled {
 
 class MainWindow(QMainWindow):
     APP_NAME = "Echo Audio Converter"
-    APP_VERSION = "0.5.1"
+    APP_VERSION = "0.5.5"
     
     def __init__(self):
         super().__init__()
@@ -724,6 +724,13 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         self._save_settings()
+        if self.analyze_worker and self.analyze_worker.isRunning():
+            reply = QMessageBox.question(self, "Analysis in Progress",
+                "LUFS analysis is running. Quit anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.No:
+                event.ignore()
+                return
         if self.batch_worker and self.batch_worker.isRunning():
             reply = QMessageBox.question(self, "Conversion in Progress",
                 "A conversion is in progress. Quit anyway?",
@@ -756,24 +763,28 @@ class MainWindow(QMainWindow):
         self.ffmpeg_status_label.setStyle(self.ffmpeg_status_label.style())
     
     def _on_update_clicked(self):
+        # Disable immediately to prevent double-invocation during the network check
+        self.update_btn.setEnabled(False)
         try:
             available, latest, installed = self.updater.is_update_available()
         except Exception as e:
+            self.update_btn.setEnabled(True)
             QMessageBox.warning(self, "Error", f"Could not check for updates: {e}")
             return
-        
+
         if not available and installed:
+            self.update_btn.setEnabled(True)
             QMessageBox.information(self, "Up to Date", f"FFmpeg {installed} is the latest.")
             return
-        
+
         msg = f"Update: {installed} → {latest}" if installed else f"Download FFmpeg {latest}?"
         reply = QMessageBox.question(self, "FFmpeg", f"{msg}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        
+
         if reply != QMessageBox.StandardButton.Yes:
+            self.update_btn.setEnabled(True)
             return
-        
-        self.update_btn.setEnabled(False)
+
         self.update_progress.setVisible(True)
         self.update_progress.setValue(0)
         
@@ -795,7 +806,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("FFmpeg updated successfully", 3000)
         else:
             QMessageBox.warning(self, "Update Failed", message)
-        self.status_bar.clearMessage()
+            self.status_bar.clearMessage()
     
     def _on_add_files(self):
         extensions = " ".join(f"*{ext}" for ext in sorted(SUPPORTED_INPUT_EXTENSIONS))
@@ -860,7 +871,11 @@ class MainWindow(QMainWindow):
                     if audio_stream:
                         codec = audio_stream.get("codec_name", "").upper()
                         source_format = self._friendly_codec_name(codec)
-                        source_sample_rate = int(audio_stream.get("sample_rate", 0)) or None
+                        sr = audio_stream.get("sample_rate")
+                        try:
+                            source_sample_rate = int(sr) or None
+                        except (ValueError, TypeError):
+                            source_sample_rate = None
                         source_channels = audio_stream.get("channels")
                 except Exception as e:
                     self.logger.debug(f"Could not probe {filepath}: {e}")
@@ -903,6 +918,9 @@ class MainWindow(QMainWindow):
             "PCM_S24LE": "WAV",
             "PCM_S32LE": "WAV",
             "PCM_F32LE": "WAV",
+            "PCM_S16BE": "AIFF",
+            "PCM_S24BE": "AIFF",
+            "PCM_AIFF": "AIFF",
             "WMAV2": "WMA",
             "WMAPRO": "WMA",
             "APE": "APE",
@@ -946,7 +964,9 @@ class MainWindow(QMainWindow):
         
         if files:
             self._add_files_to_queue(files, base_dir=base_dir)
-    
+        else:
+            self.status_bar.showMessage("No supported audio files in drop", 3000)
+
     def _on_format_changed(self, format_name: str):
         self.quality_combo.clear()
         options = get_quality_options(format_name)
@@ -954,10 +974,10 @@ class MainWindow(QMainWindow):
         default = get_default_quality(format_name)
         if default in options:
             self.quality_combo.setCurrentText(default)
-        
+
         # Update pending jobs with new format
         self._update_pending_jobs_settings()
-    
+
     def _on_quality_changed(self, quality_option: str):
         """Update pending jobs when quality selection changes."""
         self._update_pending_jobs_settings()
@@ -1110,6 +1130,8 @@ class MainWindow(QMainWindow):
             parts.append(f"{summary['complete']} complete")
         if summary['failed'] > 0:
             parts.append(f"{summary['failed']} failed")
+        if summary['cancelled'] > 0:
+            parts.append(f"{summary['cancelled']} cancelled")
         
         self.queue_summary_label.setText(" · ".join(parts) if parts else "Ready")
         
@@ -1231,9 +1253,10 @@ class MainWindow(QMainWindow):
         
         jobs = self.batch_processor.jobs
         if jobs:
-            # Calculate overall progress: converting jobs use their progress, complete=1.0
+            # Fully-done statuses all count as 1.0; converting jobs use fractional progress
+            done_statuses = (JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELLED)
             total = sum(j.progress for j in jobs if j.status == JobStatus.CONVERTING)
-            total += sum(1.0 for j in jobs if j.status == JobStatus.COMPLETE)
+            total += sum(1.0 for j in jobs if j.status in done_statuses)
             self.overall_progress.setValue(int((total / len(jobs)) * 100))
         
         self._refresh_queue_table()
@@ -1243,10 +1266,9 @@ class MainWindow(QMainWindow):
     
     def _on_batch_finished(self, completed: int, failed: int, cancelled: int):
         self.batch_worker = None  # Clean up worker reference
-        self.convert_btn.setEnabled(True)
         self.cancel_btn.setVisible(False)
         self.overall_progress.setVisible(False)
-        self._refresh_queue_table()
+        self._refresh_queue_table()  # sets convert_btn state correctly
         
         parts = []
         if completed > 0:
@@ -1284,16 +1306,15 @@ class MainWindow(QMainWindow):
         selected = self.queue_table.selectionModel().selectedRows()
         if not selected:
             return
-        
+
         rows = sorted([idx.row() for idx in selected], reverse=True)
         removed = 0
         for row in rows:
             if row < len(self.batch_processor.jobs):
                 job = self.batch_processor.jobs[row]
-                if job.status == JobStatus.PENDING:
-                    self.batch_processor.jobs.pop(row)
+                if self.batch_processor.remove_job(job.id):
                     removed += 1
-        
+
         if removed > 0:
             self._refresh_queue_table()
             self.status_bar.showMessage(f"Removed {removed} file(s)", 3000)

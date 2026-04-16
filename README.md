@@ -64,7 +64,6 @@ Log file saved to `EAC_Log.txt` in app folder.
 | MP3 | 96–320 kbps | ✓ | ✓ |
 | FLAC | Compression 0–8 | ✓ | ✓ |
 | WAV | 16/24/32-bit | ✗ | ✗ |
-| AAC | 96–256 kbps | ✓ | ✓ |
 | OGG Vorbis | Q3–Q10 (VBR) | ✓ | ✗ |
 | OPUS | 64–192 kbps | ✓ | ✗ |
 | M4A (AAC) | 96–256 kbps | ✓ | ✓ |
@@ -73,6 +72,22 @@ Log file saved to `EAC_Log.txt` in app folder.
 **Note:** WAV doesn't support embedded metadata – it's a format limitation, not a bug.
 
 ## Changelog
+
+### v0.5.2
+- **Full bugsweep**
+- Fixed: ffprobe fields that return `"N/A"` (common with WMA, some AIFF, raw streams) no longer crash probe and lose all source info
+- Fixed: Progress bar formula `elapsed * 50 / duration` made it jump to 95% within seconds. Now `elapsed / duration` (linear)
+- Fixed: Clicking Cancel during loudness analysis had no effect — analysis process now tracked in `_current_process` so Cancel works immediately
+- Fixed: "FFmpeg updated successfully" status message was immediately erased by an unconditional `clearMessage()` call — never visible
+- Fixed: Closing the window during LUFS analysis gave no warning and abandoned the ffmpeg process. `closeEvent` now guards `analyze_worker`
+- Fixed: Overall progress bar stayed below 100% when jobs failed or were cancelled — those statuses now count as done
+- Fixed: Changing format when two pending jobs shared a filename stem could assign both the same output path
+- Fixed: Bare `except:` in cancellation cleanup replaced with `except OSError` — bare except catches `SystemExit`/`KeyboardInterrupt`
+- Fixed: `BatchProcessor._cancel_requested` was set in two places but never read — dead flag removed
+- Fixed: Duplicate `AAC` format entry removed (identical to `M4A (AAC)`)
+- Fixed: `probe_file()` and `get_version()` had no timeout — hung ffprobe could freeze UI indefinitely
+- Fixed: AIFF files showed raw codec string `PCM_S16BE` in Src column instead of `AIFF`
+- Fixed: `_on_delete_selected` bypassed `remove_job()` API
 
 ### v0.5.1
 - **Code Quality Audit**

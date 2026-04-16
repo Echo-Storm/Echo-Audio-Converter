@@ -2,6 +2,8 @@
 Background workers for Echo Audio Converter.
 """
 
+import os
+
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from core import (
@@ -12,6 +14,7 @@ from core import (
     BatchProcessor,
     JobStatus,
 )
+from core.logger import get_logger
 
 
 class UpdateWorker(QThread):
@@ -49,9 +52,9 @@ class AnalyzeWorker(QThread):
     
     def request_cancel(self):
         self._cancel_requested = True
-    
+        self.ffmpeg.cancel_current()
+
     def run(self):
-        from core.logger import get_logger
         log = get_logger()
         
         # Get jobs that need analysis (pending jobs without LUFS data)
@@ -110,12 +113,9 @@ class BatchWorker(QThread):
     
     def request_cancel(self):
         self._cancel_requested = True
-        self.batch_processor.request_cancel()
         self.ffmpeg.cancel_current()
-    
+
     def run(self):
-        from core.logger import get_logger
-        import os
         log = get_logger()
         
         self.batch_processor._is_processing = True
@@ -197,7 +197,6 @@ class BatchWorker(QThread):
         
         finally:
             self.batch_processor._is_processing = False
-            self.batch_processor._cancel_requested = False
             if self.delete_source and deleted_sources > 0:
                 log.info(f"Deleted {deleted_sources} source file(s)")
             log.info(f"Batch complete: {completed} done, {failed} failed, {cancelled} cancelled")

@@ -46,20 +46,6 @@ AUDIO_FORMATS = {
         "extra_args": [],
         "supports_art": False,  # WAV doesn't support embedded metadata well
     },
-    "AAC": {
-        "codec": "aac",
-        "extension": ".m4a",
-        "quality_mode": "bitrate",
-        "quality_options": {
-            "256 kbps (High)": "256k",
-            "192 kbps": "192k",
-            "128 kbps (Standard)": "128k",
-            "96 kbps": "96k",
-        },
-        "default_quality": "128 kbps (Standard)",
-        "extra_args": [],
-        "supports_art": True,
-    },
     "OGG Vorbis": {
         "codec": "libvorbis",
         "extension": ".ogg",

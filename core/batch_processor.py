@@ -107,7 +107,6 @@ class BatchProcessor:
     def __init__(self):
         self.jobs: List[ConversionJob] = []
         self._is_processing = False
-        self._cancel_requested = False
     
     def is_duplicate(self, input_path: str) -> bool:
         normalized = os.path.normpath(input_path).lower()
@@ -138,9 +137,11 @@ class BatchProcessor:
         input_name = Path(input_path).stem
         output_filename = f"{input_name}{output_extension}"
         output_path = str(Path(output_dir) / output_filename)
-        
+
+        # Check disk AND paths already claimed by jobs in the current queue
+        existing_output_paths = {j.output_path for j in self.jobs}
         counter = 1
-        while os.path.exists(output_path):
+        while os.path.exists(output_path) or output_path in existing_output_paths:
             output_filename = f"{input_name}_{counter}{output_extension}"
             output_path = str(Path(output_dir) / output_filename)
             counter += 1
@@ -191,27 +192,38 @@ class BatchProcessor:
         loudness_target: Optional[float] = None,
     ):
         """Update all pending jobs with new format/quality/loudness settings."""
+        # Seed claimed_paths with all non-pending jobs' output paths so we
+        # don't collide with files that are already converting or completed.
+        claimed_paths = {
+            job.output_path for job in self.jobs
+            if job.status != JobStatus.PENDING
+        }
+
         for job in self.jobs:
             if job.status != JobStatus.PENDING:
                 continue
-            
+
             job.format_name = format_name
             job.quality_option = quality_option
             job.loudness_target = loudness_target
-            
+
             # Recompute output path with new extension
             input_name = Path(job.input_path).stem
             output_dir = str(Path(job.output_path).parent)
             new_output_filename = f"{input_name}{extension}"
             new_output_path = str(Path(output_dir) / new_output_filename)
-            
-            # Handle collision with existing files
+
+            # Handle collision: check disk AND paths already claimed by sibling jobs
             counter = 1
-            while os.path.exists(new_output_path) and new_output_path != job.output_path:
+            while (
+                (os.path.exists(new_output_path) or new_output_path in claimed_paths)
+                and new_output_path != job.output_path
+            ):
                 new_output_filename = f"{input_name}_{counter}{extension}"
                 new_output_path = str(Path(output_dir) / new_output_filename)
                 counter += 1
-            
+
+            claimed_paths.add(new_output_path)
             job.output_path = new_output_path
     
     def get_job_by_id(self, job_id: str) -> Optional[ConversionJob]:
@@ -229,7 +241,9 @@ class BatchProcessor:
         return len(self.get_pending_jobs())
     
     def request_cancel(self):
-        self._cancel_requested = True
+        # Cancellation state is managed by BatchWorker, not BatchProcessor.
+        # This method is kept for API compatibility.
+        pass
     
     def get_summary(self) -> dict:
         summary = {status: 0 for status in JobStatus}

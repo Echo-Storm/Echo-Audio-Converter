@@ -1,7 +1,7 @@
 # Echo Audio Converter — Handoff Document
 
-**Version:** 0.5.1  
-**Last Updated:** April 2025  
+**Version:** 0.5.3  
+**Last Updated:** April 2026  
 **Developer:** Echo (Echo-Storm)
 
 ---
@@ -256,6 +256,8 @@ Created automatically if it doesn't exist (fixed in v0.4.0).
 
 | Version | Key Changes |
 |---------|-------------|
+| 0.5.3 | Second bugsweep: add_job output-collision fix, first-audio-stream fix, cancel re-check after analysis, AnalyzeWorker cancel propagation, in-function imports cleaned, 6 unused imports removed, redundant setEnabled removed, no-op request_cancel call removed, outer finally simplified |
+| 0.5.2 | Full bugsweep: ffprobe N/A crash fix, progress formula fix, cancel-during-analysis fix, status bar fix, closeEvent analyze_worker guard, overall progress bar fix, sibling output-path collision fix, bare except fix, dead BatchProcessor._cancel_requested removed, duplicate AAC format removed, AIFF codec map entries added, imports moved to module level, probe/version timeouts added, remove_job() used consistently |
 | 0.5.1 | Code quality audit, bare except fixes, worker cleanup |
 | 0.5.0 | LUFS analysis button, LUFS column with color coding |
 | 0.4.0 | Bug sweep: progress bar fix, -inf handling, auto-create output dir |
@@ -267,7 +269,7 @@ Created automatically if it doesn't exist (fixed in v0.4.0).
 
 1. **WAV metadata** — WAV format doesn't support embedded metadata (format limitation)
 2. **OGG/OPUS album art** — These formats don't support embedded images
-3. **Progress estimation** — Uses time-based estimation, not actual FFmpeg progress parsing
+3. **Progress estimation** — Uses time-based estimation, not actual FFmpeg progress parsing. Accuracy is proportional to how well the real conversion speed tracks wall-clock time — fast SSDs and simple formats will be close; slow NAS mounts or heavy resampling may drift.
 4. **Windows only** — Updater downloads Windows FFmpeg builds from gyan.dev
 
 ---
