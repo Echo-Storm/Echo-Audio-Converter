@@ -584,19 +584,20 @@ class MainWindow(QMainWindow):
         right_panel.setSpacing(8)
         
         self.queue_table = QTableWidget()
-        self.queue_table.setColumnCount(8)
+        self.queue_table.setColumnCount(9)
         self.queue_table.setHorizontalHeaderLabels([
-            "Src", "Bitrate", "Time", "File", "Output", "Quality", "Status", "%"
+            "Src", "Bitrate", "kHz", "Time", "File", "Output", "Quality", "Status", "%"
         ])
         # Column resize modes
         self.queue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # Src
         self.queue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Bitrate
-        self.queue_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Time
-        self.queue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)  # File
-        self.queue_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Output
-        self.queue_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Quality
-        self.queue_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Status
-        self.queue_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # %
+        self.queue_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # kHz
+        self.queue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Time
+        self.queue_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)  # File
+        self.queue_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Output
+        self.queue_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Quality
+        self.queue_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # Status
+        self.queue_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.ResizeToContents)  # %
         self.queue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.queue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.queue_table.setAlternatingRowColors(True)
@@ -994,23 +995,28 @@ class MainWindow(QMainWindow):
                 bitrate_item.setToolTip("\n".join(source_info_parts))
             self.queue_table.setItem(row, 1, bitrate_item)
             
-            # Duration (col 2)
+            # Sample rate (col 2)
+            sample_item = QTableWidgetItem(job.sample_rate_display)
+            sample_item.setForeground(QColor("#808080"))
+            self.queue_table.setItem(row, 2, sample_item)
+            
+            # Duration (col 3)
             time_item = QTableWidgetItem(job.duration_display)
             time_item.setForeground(QColor("#808080"))
-            self.queue_table.setItem(row, 2, time_item)
+            self.queue_table.setItem(row, 3, time_item)
             
-            # Filename (col 3) - or relative path if from subdirectory scan
+            # Filename (col 4) - or relative path if from subdirectory scan
             file_item = QTableWidgetItem(job.display_name)
             file_item.setToolTip(job.input_path)  # Full path on hover
-            self.queue_table.setItem(row, 3, file_item)
+            self.queue_table.setItem(row, 4, file_item)
             
-            # Output format (col 4)
-            self.queue_table.setItem(row, 4, QTableWidgetItem(job.format_name))
+            # Output format (col 5)
+            self.queue_table.setItem(row, 5, QTableWidgetItem(job.format_name))
             
-            # Target quality (col 5)
-            self.queue_table.setItem(row, 5, QTableWidgetItem(job.quality_option))
+            # Target quality (col 6)
+            self.queue_table.setItem(row, 6, QTableWidgetItem(job.quality_option))
             
-            # Status with color (col 6)
+            # Status with color (col 7)
             status_item = QTableWidgetItem(job.status.value.title())
             if job.status == JobStatus.COMPLETE:
                 status_item.setForeground(QColor("#7cb342"))
@@ -1020,11 +1026,11 @@ class MainWindow(QMainWindow):
                 status_item.setForeground(QColor("#4a9fd4"))
             elif job.status == JobStatus.CANCELLED:
                 status_item.setForeground(QColor("#808080"))
-            self.queue_table.setItem(row, 6, status_item)
+            self.queue_table.setItem(row, 7, status_item)
             
-            # Progress (col 7)
+            # Progress (col 8)
             progress_text = f"{int(job.progress * 100)}%" if job.progress > 0 else ""
-            self.queue_table.setItem(row, 7, QTableWidgetItem(progress_text))
+            self.queue_table.setItem(row, 8, QTableWidgetItem(progress_text))
         
         summary = self.batch_processor.get_summary()
         parts = []

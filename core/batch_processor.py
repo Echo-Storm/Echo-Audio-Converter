@@ -81,6 +81,17 @@ class ConversionJob:
         if hours > 0:
             return f"{hours}:{minutes:02d}:{seconds:02d}"
         return f"{minutes}:{seconds:02d}"
+    
+    @property
+    def sample_rate_display(self) -> str:
+        """Human-readable sample rate string (e.g., '44.1', '48', '96')."""
+        if self.source_sample_rate is None or self.source_sample_rate <= 0:
+            return ""
+        khz = self.source_sample_rate / 1000
+        # Show decimal only if needed (44.1, 88.2, etc.)
+        if khz == int(khz):
+            return str(int(khz))
+        return f"{khz:.1f}"
 
 
 class BatchProcessor:
