@@ -1,0 +1,8 @@
+ffmpeg/*.exe
+ffmpeg/VERSION.txt
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+*.log
+EAC_Log.txt
