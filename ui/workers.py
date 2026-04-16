@@ -95,7 +95,8 @@ class BatchWorker(QThread):
                         job.format_name,
                         job.quality_option,
                         progress_callback=on_progress,
-                        cancel_check=check_cancel
+                        cancel_check=check_cancel,
+                        loudness_target=job.loudness_target,
                     )
                     
                     job.status = JobStatus.COMPLETE

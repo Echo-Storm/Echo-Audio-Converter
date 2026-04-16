@@ -335,7 +335,7 @@ QCheckBox::indicator:disabled {
 
 class MainWindow(QMainWindow):
     APP_NAME = "Echo Audio Converter"
-    APP_VERSION = "0.3.0"
+    APP_VERSION = "0.4.0"
     
     def __init__(self):
         super().__init__()
@@ -537,6 +537,22 @@ class MainWindow(QMainWindow):
         quality_layout.addWidget(self.quality_combo)
         left_panel.addLayout(quality_layout)
         
+        # Loudness normalization row
+        loudness_layout = QHBoxLayout()
+        loudness_layout.addWidget(QLabel("Loudness:"))
+        self.loudness_combo = ArrowComboBox()
+        self.loudness_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.loudness_combo.addItems([
+            "Off",
+            "-14 LUFS (Streaming)",
+            "-16 LUFS (Apple)",
+            "-23 LUFS (Broadcast)",
+        ])
+        self.loudness_combo.setToolTip("Two-pass loudness normalization (analyzes first, then converts)")
+        self.loudness_combo.currentTextChanged.connect(self._on_loudness_changed)
+        loudness_layout.addWidget(self.loudness_combo)
+        left_panel.addLayout(loudness_layout)
+        
         # Output folder row
         folder_layout = QHBoxLayout()
         self.folder_label = QLabel("Folder:")
@@ -672,6 +688,12 @@ class MainWindow(QMainWindow):
         if last_output:
             self.output_dir_edit.setText(last_output)
         
+        # Load loudness setting
+        last_loudness = self.settings.value("loudness_setting", "Off")
+        idx = self.loudness_combo.findText(last_loudness)
+        if idx >= 0:
+            self.loudness_combo.setCurrentIndex(idx)
+        
         # Load checkbox states (default to False for safety)
         recursive = self.settings.value("recursive_subdirs", False, type=bool)
         self.recursive_checkbox.setChecked(recursive)
@@ -688,6 +710,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("last_format", self.format_combo.currentText())
         self.settings.setValue("last_output_dir", self.output_dir_edit.text())
+        self.settings.setValue("loudness_setting", self.loudness_combo.currentText())
         self.settings.setValue("recursive_subdirs", self.recursive_checkbox.isChecked())
         self.settings.setValue("save_to_source", self.save_to_source_checkbox.isChecked())
         # Note: delete_source is intentionally NOT saved - must be enabled manually each session
@@ -800,6 +823,7 @@ class MainWindow(QMainWindow):
     def _add_files_to_queue(self, files: list, base_dir: str = None):
         format_name = self.format_combo.currentText()
         quality = self.quality_combo.currentText()
+        loudness_target = self._get_loudness_target()
         fmt_settings = get_format_settings(format_name)
         extension = fmt_settings["extension"]
         
@@ -839,6 +863,7 @@ class MainWindow(QMainWindow):
             job = self.batch_processor.add_job(
                 filepath, file_output_dir, format_name, quality, extension,
                 base_dir=base_dir,
+                loudness_target=loudness_target,
                 source_format=source_format,
                 source_bitrate=source_bitrate,
                 source_duration=source_duration,
@@ -930,8 +955,24 @@ class MainWindow(QMainWindow):
         """Update pending jobs when quality selection changes."""
         self._update_pending_jobs_settings()
     
+    def _on_loudness_changed(self, loudness_option: str):
+        """Update pending jobs when loudness selection changes."""
+        self._update_pending_jobs_settings()
+    
+    def _get_loudness_target(self) -> float | None:
+        """Parse loudness combo selection to LUFS value or None."""
+        text = self.loudness_combo.currentText()
+        if text == "Off":
+            return None
+        # Parse "-14 LUFS (Streaming)" -> -14.0
+        try:
+            lufs_str = text.split()[0]  # Get "-14" part
+            return float(lufs_str)
+        except (ValueError, IndexError):
+            return None
+    
     def _update_pending_jobs_settings(self):
-        """Apply current format/quality settings to all pending jobs."""
+        """Apply current format/quality/loudness settings to all pending jobs."""
         if self.batch_processor.pending_count == 0:
             return
         
@@ -945,7 +986,8 @@ class MainWindow(QMainWindow):
             return
         
         extension = fmt_settings["extension"]
-        self.batch_processor.update_pending_jobs(format_name, quality, extension)
+        loudness_target = self._get_loudness_target()
+        self.batch_processor.update_pending_jobs(format_name, quality, extension, loudness_target)
         self._refresh_queue_table()
     
     def _on_browse_output(self):
@@ -1115,7 +1157,8 @@ class MainWindow(QMainWindow):
         
         jobs = self.batch_processor.jobs
         if jobs:
-            total = sum(j.progress for j in jobs if j.status in (JobStatus.CONVERTING, JobStatus.COMPLETE))
+            # Calculate overall progress: converting jobs use their progress, complete=1.0
+            total = sum(j.progress for j in jobs if j.status == JobStatus.CONVERTING)
             total += sum(1.0 for j in jobs if j.status == JobStatus.COMPLETE)
             self.overall_progress.setValue(int((total / len(jobs)) * 100))
         

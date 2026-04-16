@@ -27,6 +27,7 @@ class ConversionJob:
     format_name: str
     quality_option: str
     base_dir: Optional[str] = None  # For relative path display when loading from subdirs
+    loudness_target: Optional[float] = None  # Target LUFS for normalization (e.g., -14.0)
     # Source file info (populated from ffprobe)
     source_format: Optional[str] = None  # e.g., "FLAC", "MP3"
     source_bitrate: Optional[int] = None  # bits per second
@@ -116,6 +117,7 @@ class BatchProcessor:
         quality_option: str,
         output_extension: str,
         base_dir: Optional[str] = None,
+        loudness_target: Optional[float] = None,
         source_format: Optional[str] = None,
         source_bitrate: Optional[int] = None,
         source_duration: Optional[float] = None,
@@ -142,6 +144,7 @@ class BatchProcessor:
             format_name=format_name,
             quality_option=quality_option,
             base_dir=base_dir,
+            loudness_target=loudness_target,
             source_format=source_format,
             source_bitrate=source_bitrate,
             source_duration=source_duration,
@@ -172,14 +175,21 @@ class BatchProcessor:
     def get_pending_jobs(self) -> List[ConversionJob]:
         return [job for job in self.jobs if job.status == JobStatus.PENDING]
     
-    def update_pending_jobs(self, format_name: str, quality_option: str, extension: str):
-        """Update all pending jobs with new format/quality settings."""
+    def update_pending_jobs(
+        self,
+        format_name: str,
+        quality_option: str,
+        extension: str,
+        loudness_target: Optional[float] = None,
+    ):
+        """Update all pending jobs with new format/quality/loudness settings."""
         for job in self.jobs:
             if job.status != JobStatus.PENDING:
                 continue
             
             job.format_name = format_name
             job.quality_option = quality_option
+            job.loudness_target = loudness_target
             
             # Recompute output path with new extension
             input_name = Path(job.input_path).stem

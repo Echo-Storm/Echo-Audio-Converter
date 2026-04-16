@@ -31,6 +31,7 @@ class FFmpegWrapper:
         self._ffmpeg_path: Optional[Path] = None
         self._ffprobe_path: Optional[Path] = None
         self._version: Optional[str] = None
+        self._current_process = None  # Track running FFmpeg process for cancellation
     
     def _find_binary(self, name: str) -> Optional[Path]:
         if os.name == 'nt':
@@ -153,6 +154,74 @@ class FFmpegWrapper:
         except subprocess.SubprocessError as e:
             raise FFmpegError(f"Failed to run ffprobe: {e}")
     
+    def analyze_loudness(self, input_path: str) -> Dict[str, float]:
+        """
+        Analyze file loudness using FFmpeg loudnorm filter (first pass).
+        Returns measured values needed for second pass normalization.
+        """
+        cmd = [
+            str(self.ffmpeg_path),
+            "-i", input_path,
+            "-af", "loudnorm=print_format=json",
+            "-f", "null",
+            "-"
+        ]
+        
+        try:
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                startupinfo=startupinfo,
+                timeout=300  # 5 minute timeout for analysis
+            )
+            
+            # loudnorm outputs JSON to stderr
+            stderr = result.stderr
+            
+            # Find the JSON block in stderr (it's between { and })
+            json_start = stderr.rfind('{')
+            json_end = stderr.rfind('}')
+            
+            if json_start == -1 or json_end == -1:
+                raise FFmpegError("Could not find loudnorm analysis output")
+            
+            json_str = stderr[json_start:json_end + 1]
+            data = json.loads(json_str)
+            
+            # Helper to safely parse values (loudnorm can return "-inf" for silent audio)
+            def safe_float(val, default):
+                try:
+                    f = float(val)
+                    # Replace infinity with sensible defaults
+                    if f == float('-inf'):
+                        return default
+                    if f == float('inf'):
+                        return default
+                    return f
+                except (ValueError, TypeError):
+                    return default
+            
+            return {
+                "input_i": safe_float(data.get("input_i"), -24.0),
+                "input_tp": safe_float(data.get("input_tp"), -1.0),
+                "input_lra": safe_float(data.get("input_lra"), 7.0),
+                "input_thresh": safe_float(data.get("input_thresh"), -34.0),
+            }
+            
+        except subprocess.TimeoutExpired:
+            raise FFmpegError("Loudness analysis timed out")
+        except json.JSONDecodeError as e:
+            raise FFmpegError(f"Failed to parse loudnorm output: {e}")
+        except subprocess.SubprocessError as e:
+            raise FFmpegError(f"Failed to run loudness analysis: {e}")
+    
     def build_conversion_command(
         self,
         input_path: str,
@@ -160,6 +229,7 @@ class FFmpegWrapper:
         format_name: str,
         quality_option: str,
         preserve_art: bool = False,
+        audio_filter: Optional[str] = None,
     ) -> List[str]:
         fmt = AUDIO_FORMATS.get(format_name)
         if not fmt:
@@ -183,6 +253,10 @@ class FFmpegWrapper:
         else:
             # Strip video streams
             cmd.append("-vn")
+        
+        # Audio filter (loudness normalization, etc.)
+        if audio_filter:
+            cmd.extend(["-af", audio_filter])
         
         # Audio codec
         codec = fmt["codec"]
@@ -214,6 +288,7 @@ class FFmpegWrapper:
         quality_option: str,
         progress_callback: Optional[Callable[[float], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        loudness_target: Optional[float] = None,
     ) -> bool:
         from .logger import get_logger
         import time
@@ -235,12 +310,54 @@ class FFmpegWrapper:
         except FFmpegError as e:
             log.warning(f"Could not probe {input_path}: {e}")
         
+        # Loudness normalization (two-pass)
+        audio_filter = None
+        if loudness_target is not None:
+            log.info(f"Analyzing loudness for {os.path.basename(input_path)}...")
+            if progress_callback:
+                progress_callback(0.05)  # Show we're doing something
+            
+            if cancel_check and cancel_check():
+                raise FFmpegError("Conversion cancelled")
+            
+            try:
+                measured = self.analyze_loudness(input_path)
+                log.debug(f"Measured: I={measured['input_i']:.1f}, TP={measured['input_tp']:.1f}, LRA={measured['input_lra']:.1f}")
+                
+                # Build loudnorm filter with measured values for accurate second pass
+                audio_filter = (
+                    f"loudnorm=I={loudness_target}:TP=-1.0:LRA=11:"
+                    f"measured_I={measured['input_i']}:"
+                    f"measured_TP={measured['input_tp']}:"
+                    f"measured_LRA={measured['input_lra']}:"
+                    f"measured_thresh={measured['input_thresh']}:"
+                    f"linear=true:print_format=summary"
+                )
+                log.info(f"  Normalizing to {loudness_target} LUFS (source: {measured['input_i']:.1f} LUFS)")
+                
+                if progress_callback:
+                    progress_callback(0.15)  # Analysis done
+                    
+            except FFmpegError as e:
+                log.warning(f"Loudness analysis failed, converting without normalization: {e}")
+                audio_filter = None
+        
         # Build command with metadata preservation
         fmt = AUDIO_FORMATS.get(format_name, {})
         preserve_art = has_album_art and fmt.get("supports_art", False)
         
+        # Ensure output directory exists
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            try:
+                os.makedirs(output_dir, exist_ok=True)
+                log.debug(f"Created output directory: {output_dir}")
+            except OSError as e:
+                raise FFmpegError(f"Cannot create output directory: {e}")
+        
         cmd = self.build_conversion_command(
-            input_path, output_path, format_name, quality_option, preserve_art
+            input_path, output_path, format_name, quality_option, preserve_art,
+            audio_filter=audio_filter
         )
         
         log.info(f"Converting: {os.path.basename(input_path)} -> {os.path.basename(output_path)}")
@@ -282,6 +399,9 @@ class FFmpegWrapper:
             
             start_time = time.time()
             last_progress = 0.0
+            # If we did loudness analysis, progress starts at 0.15, otherwise 0
+            progress_base = 0.15 if loudness_target is not None else 0.0
+            progress_range = 1.0 - progress_base  # Remaining progress space
             
             while process.poll() is None:
                 if cancel_check and cancel_check():
@@ -301,7 +421,9 @@ class FFmpegWrapper:
                 
                 if duration > 0 and progress_callback:
                     elapsed = time.time() - start_time
-                    estimated_progress = min((elapsed * 50) / duration, 0.95)
+                    # Estimate conversion progress (scaled to remaining range)
+                    conversion_progress = min((elapsed * 50) / duration, 0.95)
+                    estimated_progress = progress_base + (conversion_progress * progress_range)
                     if estimated_progress > last_progress:
                         last_progress = estimated_progress
                         progress_callback(estimated_progress)
@@ -345,7 +467,7 @@ class FFmpegWrapper:
                 process.wait()
     
     def cancel_current(self):
-        if hasattr(self, '_current_process') and self._current_process:
+        if self._current_process:
             try:
                 self._current_process.terminate()
                 self._current_process.wait(timeout=2)
