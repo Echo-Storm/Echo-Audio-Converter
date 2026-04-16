@@ -1,5 +1,11 @@
 ![Echo Audio Converter](EAC_Banner.svg)
 
+<p align="center">
+  <img src="screenshot1.jpg" alt="Screenshot 1" width="48%">
+  <img src="screenshot2.jpg" alt="Screenshot 2" width="48%">
+</p>
+
+
 ## Features
 
 - **Batch Processing** – Queue multiple files, convert all at once
