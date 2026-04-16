@@ -1,5 +1,3 @@
-# Echo Audio Converter
-
 ![Echo Audio Converter](EAC_Banner.svg)
 
 ## Features
