@@ -34,6 +34,66 @@ class UpdateWorker(QThread):
             self.finished.emit(False, f"Unexpected error: {e}")
 
 
+class AnalyzeWorker(QThread):
+    """Worker thread for analyzing loudness of queued files."""
+    job_analyzed = pyqtSignal(str, float)  # job_id, lufs value
+    job_failed = pyqtSignal(str, str)  # job_id, error message
+    progress = pyqtSignal(int, int)  # current, total
+    finished = pyqtSignal(int, int)  # analyzed count, failed count
+    
+    def __init__(self, ffmpeg: FFmpegWrapper, batch_processor: BatchProcessor, parent=None):
+        super().__init__(parent)
+        self.ffmpeg = ffmpeg
+        self.batch_processor = batch_processor
+        self._cancel_requested = False
+    
+    def request_cancel(self):
+        self._cancel_requested = True
+    
+    def run(self):
+        from core.logger import get_logger
+        log = get_logger()
+        
+        # Get jobs that need analysis (pending jobs without LUFS data)
+        jobs_to_analyze = [
+            job for job in self.batch_processor.jobs
+            if job.status == JobStatus.PENDING and job.source_lufs is None
+        ]
+        
+        if not jobs_to_analyze:
+            self.finished.emit(0, 0)
+            return
+        
+        total = len(jobs_to_analyze)
+        analyzed = 0
+        failed = 0
+        
+        log.info(f"Analyzing loudness for {total} file(s)...")
+        
+        for i, job in enumerate(jobs_to_analyze):
+            if self._cancel_requested:
+                break
+            
+            self.progress.emit(i + 1, total)
+            
+            try:
+                result = self.ffmpeg.analyze_loudness(job.input_path)
+                lufs = result.get("input_i", -24.0)
+                job.source_lufs = lufs
+                analyzed += 1
+                self.job_analyzed.emit(job.id, lufs)
+                log.debug(f"Analyzed {job.input_filename}: {lufs:.1f} LUFS")
+                
+            except Exception as e:
+                failed += 1
+                error_msg = str(e)
+                self.job_failed.emit(job.id, error_msg)
+                log.warning(f"Failed to analyze {job.input_filename}: {error_msg}")
+        
+        log.info(f"Analysis complete: {analyzed} analyzed, {failed} failed")
+        self.finished.emit(analyzed, failed)
+
+
 class BatchWorker(QThread):
     job_started = pyqtSignal(str)
     job_progress = pyqtSignal(str, float)

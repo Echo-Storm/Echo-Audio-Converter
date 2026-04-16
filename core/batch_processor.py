@@ -34,6 +34,7 @@ class ConversionJob:
     source_duration: Optional[float] = None  # seconds
     source_sample_rate: Optional[int] = None  # Hz
     source_channels: Optional[int] = None
+    source_lufs: Optional[float] = None  # Measured integrated loudness (LUFS)
     # Job state
     status: JobStatus = JobStatus.PENDING
     progress: float = 0.0
@@ -93,6 +94,13 @@ class ConversionJob:
         if khz == int(khz):
             return str(int(khz))
         return f"{khz:.1f}"
+    
+    @property
+    def lufs_display(self) -> str:
+        """Human-readable LUFS string."""
+        if self.source_lufs is None:
+            return ""
+        return f"{self.source_lufs:.1f}"
 
 
 class BatchProcessor:

@@ -9,8 +9,9 @@
 ## Features
 
 - **Batch Processing** – Queue multiple files, convert all at once
+- **LUFS Analysis** – Analyze button measures loudness of queued files; color-coded display shows if normalization is needed
 - **Loudness Normalization** – Two-pass LUFS normalization (-14 streaming, -16 Apple, -23 broadcast)
-- **Source Info Display** – Queue shows source format, bitrate, sample rate, and duration
+- **Source Info Display** – Queue shows source format, bitrate, sample rate, LUFS, and duration
 - **Recursive Folder Scanning** – Include subdirectories when adding folders
 - **Save to Original Directory** – Keep converted files alongside sources (grays out output folder)
 - **Delete Source Option** – Remove original files after successful conversion
@@ -72,6 +73,22 @@ Log file saved to `EAC_Log.txt` in app folder.
 **Note:** WAV doesn't support embedded metadata – it's a format limitation, not a bug.
 
 ## Changelog
+
+### v0.5.1
+- **Code Quality Audit**
+- Fixed: Removed unused `import re` from ffmpeg_wrapper
+- Fixed: Replaced bare `except:` clauses with `except Exception:` throughout codebase
+- Fixed: Worker thread references now properly cleaned up after completion (prevents potential state issues)
+- General code hygiene and defensive programming improvements
+
+### v0.5.0
+- **LUFS Analysis** – New "Analyze LUFS" button measures integrated loudness of queued files before conversion
+- **LUFS Column** – Queue now displays measured loudness between kHz and Time columns
+- **Color-Coded LUFS** – When a loudness target is selected, LUFS values are color-coded:
+  - Green: within 1 LUFS of target (already good)
+  - Yellow: louder than target (will be reduced)
+  - Cyan: quieter than target (will be boosted)
+- Analysis skips files that have already been measured; results persist in queue until cleared
 
 ### v0.4.0
 - **Bug Sweep & Stability Pass**

@@ -23,7 +23,7 @@ from core import (
     get_default_quality, is_supported_input, SUPPORTED_INPUT_EXTENSIONS,
 )
 from core.logger import setup_logging, log_buffer
-from ui.workers import UpdateWorker, BatchWorker
+from ui.workers import UpdateWorker, BatchWorker, AnalyzeWorker
 
 
 class ArrowComboBox(QComboBox):
@@ -335,7 +335,7 @@ QCheckBox::indicator:disabled {
 
 class MainWindow(QMainWindow):
     APP_NAME = "Echo Audio Converter"
-    APP_VERSION = "0.4.0"
+    APP_VERSION = "0.5.1"
     
     def __init__(self):
         super().__init__()
@@ -352,6 +352,7 @@ class MainWindow(QMainWindow):
         
         self.update_worker: Optional[UpdateWorker] = None
         self.batch_worker: Optional[BatchWorker] = None
+        self.analyze_worker: Optional[AnalyzeWorker] = None
         
         self.settings = QSettings("EchoStorm", "EchoAudioConverter")
         
@@ -579,6 +580,11 @@ class MainWindow(QMainWindow):
         queue_label.setObjectName("titleLabel")
         left_panel.addWidget(queue_label)
         
+        self.analyze_btn = QPushButton("Analyze LUFS")
+        self.analyze_btn.setToolTip("Measure loudness (LUFS) of queued files")
+        self.analyze_btn.clicked.connect(self._on_analyze_clicked)
+        left_panel.addWidget(self.analyze_btn)
+        
         clear_completed_btn = QPushButton("Clear Completed")
         clear_completed_btn.clicked.connect(self._on_clear_completed)
         left_panel.addWidget(clear_completed_btn)
@@ -600,20 +606,21 @@ class MainWindow(QMainWindow):
         right_panel.setSpacing(8)
         
         self.queue_table = QTableWidget()
-        self.queue_table.setColumnCount(9)
+        self.queue_table.setColumnCount(10)
         self.queue_table.setHorizontalHeaderLabels([
-            "Src", "Bitrate", "kHz", "Time", "File", "Output", "Quality", "Status", "%"
+            "Src", "Bitrate", "kHz", "LUFS", "Time", "File", "Output", "Quality", "Status", "%"
         ])
         # Column resize modes
         self.queue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # Src
         self.queue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Bitrate
         self.queue_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # kHz
-        self.queue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Time
-        self.queue_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)  # File
-        self.queue_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # Output
-        self.queue_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Quality
-        self.queue_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # Status
-        self.queue_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.ResizeToContents)  # %
+        self.queue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # LUFS
+        self.queue_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Time
+        self.queue_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)  # File
+        self.queue_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Output
+        self.queue_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # Quality
+        self.queue_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.ResizeToContents)  # Status
+        self.queue_table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.ResizeToContents)  # %
         self.queue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.queue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.queue_table.setAlternatingRowColors(True)
@@ -1033,6 +1040,8 @@ class MainWindow(QMainWindow):
                 source_info_parts.append(f"Channels: {ch_str}")
             if job.source_duration:
                 source_info_parts.append(f"Duration: {job.duration_display}")
+            if job.source_lufs is not None:
+                source_info_parts.append(f"Loudness: {job.source_lufs:.1f} LUFS")
             if source_info_parts:
                 bitrate_item.setToolTip("\n".join(source_info_parts))
             self.queue_table.setItem(row, 1, bitrate_item)
@@ -1042,23 +1051,42 @@ class MainWindow(QMainWindow):
             sample_item.setForeground(QColor("#808080"))
             self.queue_table.setItem(row, 2, sample_item)
             
-            # Duration (col 3)
+            # LUFS (col 3) - color coded based on loudness target
+            lufs_item = QTableWidgetItem(job.lufs_display)
+            if job.source_lufs is not None:
+                loudness_target = self._get_loudness_target()
+                if loudness_target is not None:
+                    diff = job.source_lufs - loudness_target
+                    if abs(diff) <= 1.0:
+                        # Within 1 LUFS of target - green (good)
+                        lufs_item.setForeground(QColor("#7cb342"))
+                    elif diff > 1.0:
+                        # Louder than target - yellow (will be reduced)
+                        lufs_item.setForeground(QColor("#c0a040"))
+                    else:
+                        # Quieter than target - cyan (will be boosted)
+                        lufs_item.setForeground(QColor("#4a9fd4"))
+                else:
+                    lufs_item.setForeground(QColor("#808080"))
+            self.queue_table.setItem(row, 3, lufs_item)
+            
+            # Duration (col 4)
             time_item = QTableWidgetItem(job.duration_display)
             time_item.setForeground(QColor("#808080"))
-            self.queue_table.setItem(row, 3, time_item)
+            self.queue_table.setItem(row, 4, time_item)
             
-            # Filename (col 4) - or relative path if from subdirectory scan
+            # Filename (col 5) - or relative path if from subdirectory scan
             file_item = QTableWidgetItem(job.display_name)
             file_item.setToolTip(job.input_path)  # Full path on hover
-            self.queue_table.setItem(row, 4, file_item)
+            self.queue_table.setItem(row, 5, file_item)
             
-            # Output format (col 5)
-            self.queue_table.setItem(row, 5, QTableWidgetItem(job.format_name))
+            # Output format (col 6)
+            self.queue_table.setItem(row, 6, QTableWidgetItem(job.format_name))
             
-            # Target quality (col 6)
-            self.queue_table.setItem(row, 6, QTableWidgetItem(job.quality_option))
+            # Target quality (col 7)
+            self.queue_table.setItem(row, 7, QTableWidgetItem(job.quality_option))
             
-            # Status with color (col 7)
+            # Status with color (col 8)
             status_item = QTableWidgetItem(job.status.value.title())
             if job.status == JobStatus.COMPLETE:
                 status_item.setForeground(QColor("#7cb342"))
@@ -1068,11 +1096,11 @@ class MainWindow(QMainWindow):
                 status_item.setForeground(QColor("#4a9fd4"))
             elif job.status == JobStatus.CANCELLED:
                 status_item.setForeground(QColor("#808080"))
-            self.queue_table.setItem(row, 7, status_item)
+            self.queue_table.setItem(row, 8, status_item)
             
-            # Progress (col 8)
+            # Progress (col 9)
             progress_text = f"{int(job.progress * 100)}%" if job.progress > 0 else ""
-            self.queue_table.setItem(row, 8, QTableWidgetItem(progress_text))
+            self.queue_table.setItem(row, 9, QTableWidgetItem(progress_text))
         
         summary = self.batch_processor.get_summary()
         parts = []
@@ -1086,7 +1114,10 @@ class MainWindow(QMainWindow):
         self.queue_summary_label.setText(" · ".join(parts) if parts else "Ready")
         
         can_convert = summary['pending'] > 0 and self.ffmpeg.is_available() and not self.batch_processor.is_processing
-        self.convert_btn.setEnabled(can_convert)
+        analyzing = self.analyze_worker is not None and self.analyze_worker.isRunning()
+        can_analyze = summary['pending'] > 0 and self.ffmpeg.is_available() and not self.batch_processor.is_processing and not analyzing
+        self.convert_btn.setEnabled(can_convert and not analyzing)
+        self.analyze_btn.setEnabled(can_analyze)
     
     def _on_clear_completed(self):
         self.batch_processor.clear_completed()
@@ -1098,6 +1129,49 @@ class MainWindow(QMainWindow):
             return
         self.batch_processor.clear_all()
         self._refresh_queue_table()
+    
+    def _on_analyze_clicked(self):
+        """Start LUFS analysis on queued files."""
+        if not self.ffmpeg.is_available():
+            QMessageBox.warning(self, "FFmpeg Not Found", "Please download FFmpeg first.")
+            return
+        
+        # Count files needing analysis
+        need_analysis = sum(
+            1 for job in self.batch_processor.jobs
+            if job.status == JobStatus.PENDING and job.source_lufs is None
+        )
+        
+        if need_analysis == 0:
+            QMessageBox.information(self, "Analysis", "All queued files have already been analyzed.")
+            return
+        
+        self.analyze_btn.setEnabled(False)
+        self.convert_btn.setEnabled(False)
+        self.status_bar.showMessage(f"Analyzing {need_analysis} file(s)...")
+        
+        self.analyze_worker = AnalyzeWorker(self.ffmpeg, self.batch_processor, parent=self)
+        self.analyze_worker.job_analyzed.connect(self._on_job_analyzed)
+        self.analyze_worker.progress.connect(self._on_analyze_progress)
+        self.analyze_worker.finished.connect(self._on_analyze_finished)
+        self.analyze_worker.start()
+    
+    def _on_job_analyzed(self, job_id: str, lufs: float):
+        """Called when a single file's LUFS is measured."""
+        self._refresh_queue_table()
+    
+    def _on_analyze_progress(self, current: int, total: int):
+        """Update status bar with analysis progress."""
+        self.status_bar.showMessage(f"Analyzing file {current}/{total}...")
+    
+    def _on_analyze_finished(self, analyzed: int, failed: int):
+        """Called when all analysis is complete."""
+        self.analyze_worker = None  # Clean up worker reference
+        self._refresh_queue_table()
+        if failed > 0:
+            self.status_bar.showMessage(f"Analyzed {analyzed} file(s), {failed} failed", 5000)
+        else:
+            self.status_bar.showMessage(f"Analyzed {analyzed} file(s)", 3000)
     
     def _on_convert_clicked(self):
         if not self.ffmpeg.is_available():
@@ -1168,6 +1242,7 @@ class MainWindow(QMainWindow):
         self._refresh_queue_table()
     
     def _on_batch_finished(self, completed: int, failed: int, cancelled: int):
+        self.batch_worker = None  # Clean up worker reference
         self.convert_btn.setEnabled(True)
         self.cancel_btn.setVisible(False)
         self.overall_progress.setVisible(False)

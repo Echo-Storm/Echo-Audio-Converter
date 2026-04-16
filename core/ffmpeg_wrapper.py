@@ -3,7 +3,6 @@ FFmpeg wrapper for Echo Audio Converter.
 """
 
 import os
-import re
 import subprocess
 import json
 import shutil
@@ -375,7 +374,7 @@ class FFmpegWrapper:
                     if not chunk:
                         break
                     stderr_data.append(chunk)
-            except:
+            except Exception:
                 pass
         
         try:
@@ -471,10 +470,10 @@ class FFmpegWrapper:
             try:
                 self._current_process.terminate()
                 self._current_process.wait(timeout=2)
-            except:
+            except Exception:
                 try:
                     self._current_process.kill()
-                except:
+                except Exception:
                     pass
     
     def clear_cache(self):

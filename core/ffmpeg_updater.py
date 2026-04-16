@@ -146,5 +146,5 @@ class FFmpegUpdater:
         finally:
             try:
                 shutil.rmtree(temp_dir, ignore_errors=True)
-            except:
+            except Exception:
                 pass
