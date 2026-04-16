@@ -1,5 +1,6 @@
 """
 Main window for Echo Audio Converter.
+Industrial theme inspired by the banner.
 """
 
 import os
@@ -10,11 +11,11 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QFileDialog,
     QTableWidget, QTableWidgetItem, QProgressBar, QMessageBox,
-    QHeaderView, QGroupBox, QSplitter, QStatusBar, QAbstractItemView,
-    QTextEdit, QMenu,
+    QHeaderView, QFrame, QSplitter, QStatusBar, QAbstractItemView,
+    QTextEdit, QMenu, QSizePolicy, QStyledItemDelegate,
 )
-from PyQt6.QtCore import Qt, QSettings, QTimer
-from PyQt6.QtGui import QAction, QKeySequence, QShortcut
+from PyQt6.QtCore import Qt, QSettings, QTimer, QSize
+from PyQt6.QtGui import QAction, QKeySequence, QShortcut, QFont, QColor, QPixmap, QPainter
 
 from core import (
     FFmpegWrapper, FFmpegUpdater, BatchProcessor, JobStatus,
@@ -23,6 +24,276 @@ from core import (
 )
 from core.logger import setup_logging, log_buffer
 from ui.workers import UpdateWorker, BatchWorker
+
+
+class ArrowComboBox(QComboBox):
+    """ComboBox with custom Unicode arrow."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+    
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        # Draw arrow manually
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QColor("#7cb342"))
+        
+        # Position arrow on right side
+        arrow = "▼"
+        font = self.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        
+        rect = self.rect()
+        arrow_x = rect.width() - 18
+        arrow_y = rect.height() // 2 + 4
+        painter.drawText(arrow_x, arrow_y, arrow)
+        painter.end()
+
+
+# Industrial color scheme
+STYLE_SHEET = """
+QMainWindow, QWidget {
+    background-color: #1a1a1a;
+    color: #c0c0c0;
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 10pt;
+}
+
+QGroupBox {
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    margin-top: 8px;
+    padding-top: 8px;
+    font-weight: bold;
+    color: #7cb342;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 5px;
+    color: #7cb342;
+}
+
+QPushButton {
+    background-color: #2d2d2d;
+    border: 1px solid #4a4a4a;
+    border-radius: 3px;
+    padding: 6px 14px;
+    color: #c0c0c0;
+    min-height: 20px;
+}
+
+QPushButton:hover {
+    background-color: #3d3d3d;
+    border-color: #7cb342;
+}
+
+QPushButton:pressed {
+    background-color: #4a4a4a;
+}
+
+QPushButton:disabled {
+    background-color: #252525;
+    color: #606060;
+    border-color: #353535;
+}
+
+QPushButton#convertBtn {
+    background-color: #2e4a1e;
+    border-color: #7cb342;
+    color: #7cb342;
+    font-weight: bold;
+    padding: 8px 20px;
+}
+
+QPushButton#convertBtn:hover {
+    background-color: #3e5a2e;
+}
+
+QPushButton#convertBtn:disabled {
+    background-color: #252525;
+    border-color: #404040;
+    color: #505050;
+}
+
+QPushButton#cancelBtn {
+    background-color: #4a2020;
+    border-color: #a04040;
+    color: #d08080;
+}
+
+QPushButton#cancelBtn:hover {
+    background-color: #5a2828;
+}
+
+QComboBox {
+    background-color: #2d2d2d;
+    border: 1px solid #4a4a4a;
+    border-radius: 3px;
+    padding: 5px 10px;
+    padding-right: 25px;
+    color: #c0c0c0;
+    min-height: 22px;
+}
+
+QComboBox:hover {
+    border-color: #7cb342;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 24px;
+    subcontrol-origin: padding;
+    subcontrol-position: right center;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    border: none;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #2d2d2d;
+    border: 1px solid #4a4a4a;
+    selection-background-color: #3e5a2e;
+    color: #c0c0c0;
+}
+
+QLineEdit {
+    background-color: #252525;
+    border: 1px solid #4a4a4a;
+    border-radius: 3px;
+    padding: 5px 8px;
+    color: #c0c0c0;
+    min-height: 22px;
+}
+
+QLineEdit:focus {
+    border-color: #7cb342;
+}
+
+QTableWidget {
+    background-color: #1e1e1e;
+    alternate-background-color: #242424;
+    border: 1px solid #3a3a3a;
+    gridline-color: #2a2a2a;
+    color: #c0c0c0;
+    selection-background-color: #3e5a2e;
+}
+
+QTableWidget::item {
+    padding: 4px;
+    border: none;
+}
+
+QTableWidget::item:selected {
+    background-color: #3e5a2e;
+}
+
+QHeaderView::section {
+    background-color: #2a2a2a;
+    color: #7cb342;
+    padding: 6px;
+    border: none;
+    border-bottom: 2px solid #7cb342;
+    font-weight: bold;
+}
+
+QProgressBar {
+    background-color: #252525;
+    border: 1px solid #3a3a3a;
+    border-radius: 3px;
+    height: 18px;
+    text-align: center;
+    color: #c0c0c0;
+}
+
+QProgressBar::chunk {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #4a7a2a, stop:1 #7cb342);
+    border-radius: 2px;
+}
+
+QTextEdit {
+    background-color: #151515;
+    border: 1px solid #2a2a2a;
+    color: #808080;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 9pt;
+}
+
+QStatusBar {
+    background-color: #1a1a1a;
+    border-top: 1px solid #2a2a2a;
+    color: #808080;
+}
+
+QLabel {
+    color: #a0a0a0;
+}
+
+QLabel#titleLabel {
+    color: #7cb342;
+    font-size: 11pt;
+    font-weight: bold;
+}
+
+QLabel#ffmpegStatus {
+    color: #7cb342;
+    font-size: 9pt;
+}
+
+QLabel#ffmpegStatusBad {
+    color: #c04040;
+    font-size: 9pt;
+}
+
+QFrame#separator {
+    background-color: #3a3a3a;
+    max-height: 1px;
+}
+
+QSplitter::handle {
+    background-color: #2a2a2a;
+}
+
+QSplitter::handle:horizontal {
+    width: 3px;
+}
+
+QScrollBar:vertical {
+    background-color: #1a1a1a;
+    width: 12px;
+    border: none;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #3a3a3a;
+    border-radius: 4px;
+    min-height: 30px;
+    margin: 2px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #4a4a4a;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QMenu {
+    background-color: #2d2d2d;
+    border: 1px solid #4a4a4a;
+    color: #c0c0c0;
+}
+
+QMenu::item:selected {
+    background-color: #3e5a2e;
+}
+"""
 
 
 class MainWindow(QMainWindow):
@@ -47,6 +318,7 @@ class MainWindow(QMainWindow):
         
         self.settings = QSettings("EchoStorm", "EchoAudioConverter")
         
+        self.setStyleSheet(STYLE_SHEET)
         self._setup_ui()
         self._load_settings()
         self._update_ffmpeg_status()
@@ -59,162 +331,263 @@ class MainWindow(QMainWindow):
     
     def _setup_ui(self):
         self.setWindowTitle(f"{self.APP_NAME} v{self.APP_VERSION}")
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(950, 700)
         
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
-        main_layout.setSpacing(10)
+        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(0, 0, 0, 0)
         
-        # FFmpeg status
-        ffmpeg_group = QGroupBox("FFmpeg")
-        ffmpeg_layout = QHBoxLayout(ffmpeg_group)
+        # === Header Banner (Industrial Style) ===
+        header_container = QWidget()
+        header_container.setFixedHeight(70)
+        header_container.setStyleSheet("""
+            QWidget {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #2a2a2a,
+                    stop:0.3 #1f1f1f,
+                    stop:0.7 #1a1a1a,
+                    stop:1 #151515);
+                border-bottom: 2px solid #3a3a3a;
+            }
+        """)
+        header_layout = QHBoxLayout(header_container)
+        header_layout.setContentsMargins(20, 0, 20, 0)
+        header_layout.setSpacing(15)
         
-        self.ffmpeg_status_label = QLabel("Checking...")
-        self.ffmpeg_status_label.setMinimumWidth(400)
-        ffmpeg_layout.addWidget(self.ffmpeg_status_label)
-        ffmpeg_layout.addStretch()
+        # Left decorative element
+        left_deco = QLabel("◢◤◢◤")
+        left_deco.setStyleSheet("color: #4a4a4a; font-size: 16pt; border: none; background: transparent;")
+        header_layout.addWidget(left_deco)
         
-        self.update_btn = QPushButton("Check for Updates")
-        self.update_btn.clicked.connect(self._on_update_clicked)
-        ffmpeg_layout.addWidget(self.update_btn)
+        # Left accent bar
+        left_bar = QFrame()
+        left_bar.setFixedHeight(3)
+        left_bar.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2a2a2a, stop:1 #7cb342); border: none;")
+        left_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        header_layout.addWidget(left_bar)
+        
+        # Title
+        title_label = QLabel("ECHO AUDIO CONVERTER")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet("""
+            color: #7cb342;
+            font-size: 22pt;
+            font-weight: bold;
+            font-family: "Segoe UI", "Arial Black", sans-serif;
+            letter-spacing: 3px;
+            background: transparent;
+            border: none;
+            padding: 0 15px;
+        """)
+        header_layout.addWidget(title_label)
+        
+        # Right accent bar
+        right_bar = QFrame()
+        right_bar.setFixedHeight(3)
+        right_bar.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7cb342, stop:1 #2a2a2a); border: none;")
+        right_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        header_layout.addWidget(right_bar)
+        
+        # Right decorative element
+        right_deco = QLabel("◥◣◥◣")
+        right_deco.setStyleSheet("color: #4a4a4a; font-size: 16pt; border: none; background: transparent;")
+        header_layout.addWidget(right_deco)
+        
+        main_layout.addWidget(header_container)
+        
+        # Content wrapper with margins
+        content_wrapper = QWidget()
+        content_wrapper_layout = QVBoxLayout(content_wrapper)
+        content_wrapper_layout.setSpacing(8)
+        content_wrapper_layout.setContentsMargins(12, 8, 12, 12)
+        
+        # === Top bar: FFmpeg status (compact) ===
+        top_bar = QHBoxLayout()
+        top_bar.setSpacing(12)
+        
+        self.ffmpeg_status_label = QLabel("Checking FFmpeg...")
+        self.ffmpeg_status_label.setObjectName("ffmpegStatus")
+        top_bar.addWidget(self.ffmpeg_status_label)
         
         self.update_progress = QProgressBar()
-        self.update_progress.setMaximumWidth(200)
+        self.update_progress.setFixedWidth(150)
+        self.update_progress.setFixedHeight(16)
         self.update_progress.setVisible(False)
-        ffmpeg_layout.addWidget(self.update_progress)
+        top_bar.addWidget(self.update_progress)
         
-        main_layout.addWidget(ffmpeg_group)
+        top_bar.addStretch()
         
-        # Log viewer
-        log_group = QGroupBox("Log")
-        log_layout = QVBoxLayout(log_group)
-        log_layout.setContentsMargins(5, 5, 5, 5)
+        self.update_btn = QPushButton("Check for Updates")
+        self.update_btn.setFixedHeight(26)
+        self.update_btn.clicked.connect(self._on_update_clicked)
+        top_bar.addWidget(self.update_btn)
         
-        self.log_view = QTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumHeight(100)
-        self.log_view.setStyleSheet("QTextEdit { font-family: Consolas, monospace; font-size: 9pt; }")
-        log_layout.addWidget(self.log_view)
+        content_wrapper_layout.addLayout(top_bar)
         
-        main_layout.addWidget(log_group)
+        # Separator
+        sep = QFrame()
+        sep.setObjectName("separator")
+        sep.setFrameShape(QFrame.Shape.HLine)
+        content_wrapper_layout.addWidget(sep)
         
-        # Main splitter
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # === Main content area ===
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(12)
         
-        # Left panel
-        settings_widget = QWidget()
-        settings_layout = QVBoxLayout(settings_widget)
-        settings_layout.setContentsMargins(0, 0, 0, 0)
+        # --- Left panel: Controls ---
+        left_panel = QVBoxLayout()
+        left_panel.setSpacing(10)
         
-        input_group = QGroupBox("Input")
-        input_layout = QVBoxLayout(input_group)
+        # Input section
+        input_label = QLabel("INPUT")
+        input_label.setObjectName("titleLabel")
+        left_panel.addWidget(input_label)
         
         add_files_btn = QPushButton("Add Files...")
         add_files_btn.clicked.connect(self._on_add_files)
-        input_layout.addWidget(add_files_btn)
+        left_panel.addWidget(add_files_btn)
         
         add_folder_btn = QPushButton("Add Folder...")
         add_folder_btn.clicked.connect(self._on_add_folder)
-        input_layout.addWidget(add_folder_btn)
+        left_panel.addWidget(add_folder_btn)
         
-        drop_label = QLabel("Or drag && drop files here")
+        drop_label = QLabel("or drag && drop")
         drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_label.setStyleSheet("color: gray; font-style: italic;")
-        input_layout.addWidget(drop_label)
+        drop_label.setStyleSheet("color: #505050; font-style: italic; font-size: 9pt;")
+        left_panel.addWidget(drop_label)
         
-        settings_layout.addWidget(input_group)
+        left_panel.addSpacing(10)
         
-        output_group = QGroupBox("Output Settings")
-        output_layout = QGridLayout(output_group)
+        # Output section
+        output_label = QLabel("OUTPUT")
+        output_label.setObjectName("titleLabel")
+        left_panel.addWidget(output_label)
         
-        output_layout.addWidget(QLabel("Format:"), 0, 0)
-        self.format_combo = QComboBox()
+        # Format row
+        format_layout = QHBoxLayout()
+        format_layout.addWidget(QLabel("Format:"))
+        self.format_combo = ArrowComboBox()
         self.format_combo.addItems(get_format_names())
         self.format_combo.currentTextChanged.connect(self._on_format_changed)
-        output_layout.addWidget(self.format_combo, 0, 1)
+        self.format_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        format_layout.addWidget(self.format_combo)
+        left_panel.addLayout(format_layout)
         
-        output_layout.addWidget(QLabel("Quality:"), 1, 0)
-        self.quality_combo = QComboBox()
-        output_layout.addWidget(self.quality_combo, 1, 1)
+        # Quality row
+        quality_layout = QHBoxLayout()
+        quality_layout.addWidget(QLabel("Quality:"))
+        self.quality_combo = ArrowComboBox()
+        self.quality_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        quality_layout.addWidget(self.quality_combo)
+        left_panel.addLayout(quality_layout)
         
-        output_layout.addWidget(QLabel("Output Folder:"), 2, 0)
-        output_dir_layout = QHBoxLayout()
+        # Output folder row
+        folder_layout = QHBoxLayout()
+        folder_layout.addWidget(QLabel("Folder:"))
         self.output_dir_edit = QLineEdit()
-        self.output_dir_edit.setPlaceholderText("Same as input file")
-        output_dir_layout.addWidget(self.output_dir_edit)
+        self.output_dir_edit.setPlaceholderText("Same as source")
+        folder_layout.addWidget(self.output_dir_edit)
         browse_btn = QPushButton("...")
-        browse_btn.setMaximumWidth(30)
+        browse_btn.setFixedWidth(30)
         browse_btn.clicked.connect(self._on_browse_output)
-        output_dir_layout.addWidget(browse_btn)
-        output_layout.addLayout(output_dir_layout, 2, 1)
+        folder_layout.addWidget(browse_btn)
+        left_panel.addLayout(folder_layout)
         
-        settings_layout.addWidget(output_group)
+        left_panel.addSpacing(10)
         
-        queue_controls = QGroupBox("Queue")
-        queue_btn_layout = QVBoxLayout(queue_controls)
+        # Queue section
+        queue_label = QLabel("QUEUE")
+        queue_label.setObjectName("titleLabel")
+        left_panel.addWidget(queue_label)
         
         clear_completed_btn = QPushButton("Clear Completed")
         clear_completed_btn.clicked.connect(self._on_clear_completed)
-        queue_btn_layout.addWidget(clear_completed_btn)
+        left_panel.addWidget(clear_completed_btn)
         
         clear_all_btn = QPushButton("Clear All")
         clear_all_btn.clicked.connect(self._on_clear_all)
-        queue_btn_layout.addWidget(clear_all_btn)
+        left_panel.addWidget(clear_all_btn)
         
-        settings_layout.addWidget(queue_controls)
-        settings_layout.addStretch()
+        left_panel.addStretch()
         
-        splitter.addWidget(settings_widget)
+        # Left panel container
+        left_widget = QWidget()
+        left_widget.setLayout(left_panel)
+        left_widget.setFixedWidth(260)
+        content_layout.addWidget(left_widget)
         
-        # Right panel - queue table
-        queue_widget = QWidget()
-        queue_layout = QVBoxLayout(queue_widget)
-        queue_layout.setContentsMargins(0, 0, 0, 0)
+        # --- Right panel: Queue table ---
+        right_panel = QVBoxLayout()
+        right_panel.setSpacing(8)
         
         self.queue_table = QTableWidget()
         self.queue_table.setColumnCount(5)
-        self.queue_table.setHorizontalHeaderLabels(["Input File", "Output Format", "Quality", "Status", "Progress"])
+        self.queue_table.setHorizontalHeaderLabels(["File", "Format", "Quality", "Status", "Progress"])
         self.queue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.queue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.queue_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.queue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.queue_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.queue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.queue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.queue_table.setAlternatingRowColors(True)
         self.queue_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.queue_table.customContextMenuRequested.connect(self._on_queue_context_menu)
+        self.queue_table.verticalHeader().setVisible(False)
         
         delete_shortcut = QShortcut(QKeySequence.StandardKey.Delete, self.queue_table)
         delete_shortcut.activated.connect(self._on_delete_selected)
         
-        queue_layout.addWidget(self.queue_table)
-        splitter.addWidget(queue_widget)
-        splitter.setSizes([300, 600])
+        right_panel.addWidget(self.queue_table)
         
-        main_layout.addWidget(splitter)
+        # Log viewer (compact, at bottom of queue)
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setFixedHeight(80)
+        self.log_view.setPlaceholderText("Log output...")
+        right_panel.addWidget(self.log_view)
         
-        # Bottom bar
-        bottom_layout = QHBoxLayout()
+        right_widget = QWidget()
+        right_widget.setLayout(right_panel)
+        content_layout.addWidget(right_widget)
         
-        self.queue_summary_label = QLabel("Queue: 0 files")
-        bottom_layout.addWidget(self.queue_summary_label)
-        bottom_layout.addStretch()
+        content_wrapper_layout.addLayout(content_layout)
+        
+        # === Bottom bar: Actions ===
+        bottom_bar = QHBoxLayout()
+        bottom_bar.setSpacing(12)
+        
+        self.queue_summary_label = QLabel("Ready")
+        self.queue_summary_label.setStyleSheet("color: #606060;")
+        bottom_bar.addWidget(self.queue_summary_label)
+        
+        bottom_bar.addStretch()
         
         self.overall_progress = QProgressBar()
-        self.overall_progress.setMinimumWidth(200)
+        self.overall_progress.setFixedWidth(200)
         self.overall_progress.setVisible(False)
-        bottom_layout.addWidget(self.overall_progress)
-        
-        self.convert_btn = QPushButton("Convert All")
-        self.convert_btn.setMinimumWidth(120)
-        self.convert_btn.clicked.connect(self._on_convert_clicked)
-        self.convert_btn.setEnabled(False)
-        bottom_layout.addWidget(self.convert_btn)
+        bottom_bar.addWidget(self.overall_progress)
         
         self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("cancelBtn")
         self.cancel_btn.clicked.connect(self._on_cancel_clicked)
         self.cancel_btn.setVisible(False)
-        bottom_layout.addWidget(self.cancel_btn)
+        bottom_bar.addWidget(self.cancel_btn)
         
-        main_layout.addLayout(bottom_layout)
+        self.convert_btn = QPushButton("Convert All")
+        self.convert_btn.setObjectName("convertBtn")
+        self.convert_btn.clicked.connect(self._on_convert_clicked)
+        self.convert_btn.setEnabled(False)
+        bottom_bar.addWidget(self.convert_btn)
         
+        content_wrapper_layout.addLayout(bottom_bar)
+        
+        # Add content wrapper to main layout
+        main_layout.addWidget(content_wrapper)
+        
+        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         
@@ -250,15 +623,24 @@ class MainWindow(QMainWindow):
     def _update_ffmpeg_status(self):
         if self.ffmpeg.is_available():
             version = self.ffmpeg.get_version()
-            if len(version) > 60:
-                version = version[:60] + "..."
+            # Extract just version number
+            if "version" in version:
+                parts = version.split()
+                for i, p in enumerate(parts):
+                    if p == "version" and i + 1 < len(parts):
+                        version = f"FFmpeg {parts[i+1]}"
+                        break
+            if len(version) > 40:
+                version = version[:40] + "..."
             self.ffmpeg_status_label.setText(f"✓ {version}")
-            self.ffmpeg_status_label.setStyleSheet("color: green;")
-            self.update_btn.setText("Check for Updates")
+            self.ffmpeg_status_label.setObjectName("ffmpegStatus")
+            self.update_btn.setText("Update")
         else:
             self.ffmpeg_status_label.setText("✗ FFmpeg not found")
-            self.ffmpeg_status_label.setStyleSheet("color: red;")
-            self.update_btn.setText("Download FFmpeg")
+            self.ffmpeg_status_label.setObjectName("ffmpegStatusBad")
+            self.update_btn.setText("Download")
+        # Refresh style
+        self.ffmpeg_status_label.setStyle(self.ffmpeg_status_label.style())
     
     def _on_update_clicked(self):
         try:
@@ -271,8 +653,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Up to Date", f"FFmpeg {installed} is the latest.")
             return
         
-        msg = f"Update available: {installed} → {latest}" if installed else f"FFmpeg {latest} will be downloaded."
-        reply = QMessageBox.question(self, "Download FFmpeg", f"{msg}\n\nProceed?",
+        msg = f"Update: {installed} → {latest}" if installed else f"Download FFmpeg {latest}?"
+        reply = QMessageBox.question(self, "FFmpeg", f"{msg}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         
         if reply != QMessageBox.StandardButton.Yes:
@@ -297,7 +679,7 @@ class MainWindow(QMainWindow):
         if success:
             self.ffmpeg.clear_cache()
             self._update_ffmpeg_status()
-            QMessageBox.information(self, "Success", message)
+            self.status_bar.showMessage("FFmpeg updated successfully", 3000)
         else:
             QMessageBox.warning(self, "Update Failed", message)
         self.status_bar.clearMessage()
@@ -337,10 +719,10 @@ class MainWindow(QMainWindow):
         
         self._refresh_queue_table()
         
+        msg = f"Added {added} file(s)"
         if skipped > 0:
-            self.status_bar.showMessage(f"Added {added}, skipped {skipped} duplicate(s)", 3000)
-        else:
-            self.status_bar.showMessage(f"Added {added} file(s)", 3000)
+            msg += f", {skipped} skipped"
+        self.status_bar.showMessage(msg, 3000)
         self.logger.info(f"Added {added} files, skipped {skipped} duplicates")
     
     def dragEnterEvent(self, event):
@@ -377,26 +759,37 @@ class MainWindow(QMainWindow):
         self.queue_table.setRowCount(len(self.batch_processor.jobs))
         
         for row, job in enumerate(self.batch_processor.jobs):
+            # Filename
             self.queue_table.setItem(row, 0, QTableWidgetItem(job.input_filename))
             self.queue_table.setItem(row, 1, QTableWidgetItem(job.format_name))
             self.queue_table.setItem(row, 2, QTableWidgetItem(job.quality_option))
             
+            # Status with color
             status_item = QTableWidgetItem(job.status.value.title())
             if job.status == JobStatus.COMPLETE:
-                status_item.setForeground(Qt.GlobalColor.darkGreen)
+                status_item.setForeground(QColor("#7cb342"))
             elif job.status == JobStatus.FAILED:
-                status_item.setForeground(Qt.GlobalColor.red)
+                status_item.setForeground(QColor("#c04040"))
             elif job.status == JobStatus.CONVERTING:
-                status_item.setForeground(Qt.GlobalColor.blue)
+                status_item.setForeground(QColor("#4a9fd4"))
+            elif job.status == JobStatus.CANCELLED:
+                status_item.setForeground(QColor("#808080"))
             self.queue_table.setItem(row, 3, status_item)
             
+            # Progress
             progress_text = f"{int(job.progress * 100)}%" if job.progress > 0 else ""
             self.queue_table.setItem(row, 4, QTableWidgetItem(progress_text))
         
         summary = self.batch_processor.get_summary()
-        self.queue_summary_label.setText(
-            f"Queue: {summary['pending']} pending, {summary['complete']} complete, {summary['failed']} failed"
-        )
+        parts = []
+        if summary['pending'] > 0:
+            parts.append(f"{summary['pending']} pending")
+        if summary['complete'] > 0:
+            parts.append(f"{summary['complete']} complete")
+        if summary['failed'] > 0:
+            parts.append(f"{summary['failed']} failed")
+        
+        self.queue_summary_label.setText(" · ".join(parts) if parts else "Ready")
         
         can_convert = summary['pending'] > 0 and self.ffmpeg.is_available() and not self.batch_processor.is_processing
         self.convert_btn.setEnabled(can_convert)
@@ -473,10 +866,10 @@ class MainWindow(QMainWindow):
         if cancelled > 0:
             parts.append(f"{cancelled} cancelled")
         
-        self.status_bar.showMessage(", ".join(parts) if parts else "No files processed", 5000)
+        self.status_bar.showMessage(" · ".join(parts) if parts else "Done", 5000)
         
         if failed > 0:
-            QMessageBox.warning(self, "Some Conversions Failed", f"{failed} file(s) failed. Check queue for details.")
+            QMessageBox.warning(self, "Conversion Issues", f"{failed} file(s) failed. Check log for details.")
     
     def _refresh_log_view(self):
         logs = log_buffer.get_logs()
