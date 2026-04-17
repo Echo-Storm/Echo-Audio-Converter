@@ -233,7 +233,7 @@ QTextEdit {
 QStatusBar {
     background-color: #1a1a1a;
     border-top: 1px solid #2a2a2a;
-    color: #808080;
+    color: #7cb342;
 }
 
 QLabel {
@@ -339,7 +339,7 @@ QWidget#leftPanel {
 QPushButton#donateBtn {
     background: transparent;
     border: none;
-    color: #363636;
+    color: #7cb342;
     font-size: 8pt;
     padding: 0px 10px;
     min-height: 0;
@@ -347,7 +347,7 @@ QPushButton#donateBtn {
 }
 
 QPushButton#donateBtn:hover {
-    color: #7cb342;
+    color: #9dd35a;
 }
 """
 
@@ -731,7 +731,7 @@ class MainWindow(QMainWindow):
         bottom_bar.setSpacing(12)
         
         self.queue_summary_label = QLabel("Ready")
-        self.queue_summary_label.setStyleSheet("color: #606060;")
+        self.queue_summary_label.setStyleSheet("color: #7cb342;")
         bottom_bar.addWidget(self.queue_summary_label)
         
         bottom_bar.addStretch()
