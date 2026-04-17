@@ -94,6 +94,7 @@ class FFmpegWrapper:
     def is_available(self) -> bool:
         try:
             _ = self.ffmpeg_path
+            _ = self.ffprobe_path
             return True
         except FFmpegNotFoundError:
             return False
@@ -110,57 +111,78 @@ class FFmpegWrapper:
                 result = subprocess.run(
                     [str(self.ffmpeg_path), "-version"],
                     capture_output=True,
-                    text=True,
                     timeout=15,
                     startupinfo=startupinfo
                 )
-                self._version = result.stdout.split('\n')[0]
+                self._version = result.stdout.decode('utf-8', errors='replace').split('\n')[0]
             except Exception as e:
                 self._version = f"Unknown (error: {e})"
         return self._version
     
     def probe_file(self, input_path: str) -> Dict[str, Any]:
-        cmd = [
-            str(self.ffprobe_path),
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams",
-            input_path
-        ]
-        
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+
+        log = get_logger()
+
         try:
-            startupinfo = None
-            if os.name == 'nt':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
-            
+            # cmd must be inside the try so FFmpegNotFoundError from self.ffprobe_path
+            # is caught and re-raised as FFmpegError, not silently swallowed upstream.
+            cmd = [
+                str(self.ffprobe_path),
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_format",
+                "-show_streams",
+                input_path,
+            ]
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
                 timeout=30,
-                startupinfo=startupinfo
+                startupinfo=startupinfo,
             )
-            
+
             if result.returncode != 0:
-                raise FFmpegError(f"FFprobe failed: {result.stderr[:300]}")
-            
-            data = json.loads(result.stdout)
+                err = result.stderr.decode('utf-8', errors='replace')
+                raise FFmpegError(f"FFprobe failed: {err[:300]}")
+
+            stdout = result.stdout.decode('utf-8', errors='replace')
+            data = json.loads(stdout)
             fmt = data.get("format", {})
-            streams = data.get("streams", [])
-            
+            # Use `or []` not `get(..., [])`: the latter passes through null if the
+            # key exists but has value null, which would make the for-loop raise TypeError.
+            streams = data.get("streams") or []
+
             audio_stream = None
             has_album_art = False
             for stream in streams:
                 if stream.get("codec_type") == "audio" and audio_stream is None:
                     audio_stream = stream
                 elif stream.get("codec_type") == "video":
-                    # Check if it's album art (attached pic)
                     if stream.get("disposition", {}).get("attached_pic", 0) == 1:
                         has_album_art = True
-            
+
+            # Fallback: if the general probe returned no audio stream (empty streams
+            # list or no audio-type entry), run a targeted second probe that explicitly
+            # selects the first audio stream.  Some builds/files return an empty streams
+            # array in the combined query but work fine with a direct stream selection.
+            if audio_stream is None:
+                log.debug(
+                    f"probe_file: general probe found {len(streams)} stream(s), none audio "
+                    f"for {os.path.basename(input_path)} — trying targeted audio probe"
+                )
+                audio_stream = self._probe_audio_stream(input_path, startupinfo)
+                if audio_stream is None:
+                    log.warning(
+                        f"probe_file: could not detect audio stream for "
+                        f"'{os.path.basename(input_path)}' — Src and kHz will be blank"
+                    )
+
             return {
                 "duration": _safe_float(fmt.get("duration"), 0.0),
                 "format_name": fmt.get("format_name", "unknown"),
@@ -170,13 +192,44 @@ class FFmpegWrapper:
                 "tags": fmt.get("tags", {}),
                 "streams": streams,
             }
-            
+
         except json.JSONDecodeError as e:
             raise FFmpegError(f"Failed to parse ffprobe output: {e}")
         except subprocess.TimeoutExpired:
             raise FFmpegError("FFprobe timed out — file may be corrupt or inaccessible")
-        except subprocess.SubprocessError as e:
+        except (subprocess.SubprocessError, FFmpegNotFoundError) as e:
             raise FFmpegError(f"Failed to run ffprobe: {e}")
+
+    def _probe_audio_stream(
+        self, input_path: str, startupinfo=None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Targeted fallback probe: ask ffprobe explicitly for the first audio stream
+        only.  Uses -select_streams a:0 so the result is always audio or nothing.
+        """
+        try:
+            cmd = [
+                str(self.ffprobe_path),
+                "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries",
+                "stream=codec_name,codec_type,sample_rate,channels,bit_rate",
+                "-print_format", "json",
+                input_path,
+            ]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=15,
+                startupinfo=startupinfo,
+            )
+            if result.returncode != 0:
+                return None
+            data = json.loads(result.stdout.decode('utf-8', errors='replace'))
+            streams = data.get("streams") or []
+            return streams[0] if streams else None
+        except Exception:
+            return None
     
     def analyze_loudness(self, input_path: str) -> Dict[str, float]:
         """
@@ -219,8 +272,8 @@ class FFmpegWrapper:
             finally:
                 self._current_process = None
 
-            if process.returncode != 0 and not stderr_bytes:
-                raise FFmpegError("Loudness analysis failed with no output")
+            if process.returncode != 0:
+                raise FFmpegError("Loudness analysis failed")
 
             stderr = stderr_bytes.decode('utf-8', errors='replace')
 
@@ -259,6 +312,7 @@ class FFmpegWrapper:
         quality_option: str,
         preserve_art: bool = False,
         audio_filter: Optional[str] = None,
+        sample_rate: Optional[int] = None,
     ) -> List[str]:
         fmt = AUDIO_FORMATS.get(format_name)
         if not fmt:
@@ -304,7 +358,11 @@ class FFmpegWrapper:
         
         # Format-specific extra args
         cmd.extend(fmt.get("extra_args", []))
-        
+
+        # Output sample rate override (-ar); None means keep source rate
+        if sample_rate:
+            cmd.extend(["-ar", str(sample_rate)])
+
         cmd.append(output_path)
         
         return cmd
@@ -318,6 +376,7 @@ class FFmpegWrapper:
         progress_callback: Optional[Callable[[float], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         loudness_target: Optional[float] = None,
+        output_sample_rate: Optional[int] = None,
     ) -> bool:
         log = get_logger()
         
@@ -387,7 +446,8 @@ class FFmpegWrapper:
         
         cmd = self.build_conversion_command(
             input_path, output_path, format_name, quality_option, preserve_art,
-            audio_filter=audio_filter
+            audio_filter=audio_filter,
+            sample_rate=output_sample_rate,
         )
         
         log.info(f"Converting: {os.path.basename(input_path)} -> {os.path.basename(output_path)}")
@@ -461,7 +521,19 @@ class FFmpegWrapper:
                 time.sleep(0.05)
             
             stderr_thread.join(timeout=2)
-            
+
+            # Guard against the race where cancel_current() killed the process
+            # externally (from request_cancel) before the while loop's cancel_check
+            # had a chance to handle it gracefully.  The process returncode will be
+            # non-zero, but the real reason is cancellation — not an ffmpeg error.
+            if cancel_check and cancel_check():
+                try:
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                except OSError as e:
+                    log.warning(f"Could not delete partial output '{output_path}': {e}")
+                raise FFmpegError("Conversion cancelled")
+
             if process.returncode != 0:
                 stderr_text = b''.join(stderr_data).decode('utf-8', errors='replace')
                 error_lines = []
@@ -501,11 +573,16 @@ class FFmpegWrapper:
             try:
                 self._current_process.terminate()
                 self._current_process.wait(timeout=2)
-            except Exception:
+            except subprocess.TimeoutExpired:
+                # terminate() didn't stop it in time; escalate to kill() and
+                # always wait() afterwards so the process doesn't become a zombie.
                 try:
                     self._current_process.kill()
+                    self._current_process.wait()
                 except Exception:
                     pass
+            except Exception:
+                pass
     
     def clear_cache(self):
         self._ffmpeg_path = None

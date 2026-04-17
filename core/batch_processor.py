@@ -35,6 +35,8 @@ class ConversionJob:
     source_sample_rate: Optional[int] = None  # Hz
     source_channels: Optional[int] = None
     source_lufs: Optional[float] = None  # Measured integrated loudness (LUFS)
+    # Output options
+    output_sample_rate: Optional[int] = None  # Override output sample rate (Hz); None = keep source
     # Job state
     status: JobStatus = JobStatus.PENDING
     progress: float = 0.0
@@ -63,9 +65,9 @@ class ConversionJob:
     
     @property
     def bitrate_display(self) -> str:
-        """Human-readable bitrate string."""
+        """Human-readable bitrate string. 'n/a' if unknown."""
         if self.source_bitrate is None:
-            return ""
+            return "n/a"
         kbps = self.source_bitrate // 1000
         if kbps >= 1000:
             return f"{kbps // 1000}.{(kbps % 1000) // 100}M"
@@ -86,9 +88,9 @@ class ConversionJob:
     
     @property
     def sample_rate_display(self) -> str:
-        """Human-readable sample rate string (e.g., '44.1', '48', '96')."""
+        """Human-readable sample rate string (e.g., '44.1', '48', '96'). 'n/a' if unknown."""
         if self.source_sample_rate is None or self.source_sample_rate <= 0:
-            return ""
+            return "n/a"
         khz = self.source_sample_rate / 1000
         # Show decimal only if needed (44.1, 88.2, etc.)
         if khz == int(khz):
@@ -125,6 +127,7 @@ class BatchProcessor:
         output_extension: str,
         base_dir: Optional[str] = None,
         loudness_target: Optional[float] = None,
+        output_sample_rate: Optional[int] = None,
         source_format: Optional[str] = None,
         source_bitrate: Optional[int] = None,
         source_duration: Optional[float] = None,
@@ -154,6 +157,7 @@ class BatchProcessor:
             quality_option=quality_option,
             base_dir=base_dir,
             loudness_target=loudness_target,
+            output_sample_rate=output_sample_rate,
             source_format=source_format,
             source_bitrate=source_bitrate,
             source_duration=source_duration,
@@ -172,9 +176,11 @@ class BatchProcessor:
         return False
     
     def clear_completed(self):
+        """Remove only successfully completed jobs from the queue.
+        Failed and cancelled jobs are kept so the user can see what went wrong."""
         self.jobs = [
             job for job in self.jobs
-            if job.status in (JobStatus.PENDING, JobStatus.CONVERTING)
+            if job.status != JobStatus.COMPLETE
         ]
     
     def clear_all(self):
@@ -190,8 +196,9 @@ class BatchProcessor:
         quality_option: str,
         extension: str,
         loudness_target: Optional[float] = None,
+        output_sample_rate: Optional[int] = None,
     ):
-        """Update all pending jobs with new format/quality/loudness settings."""
+        """Update all pending jobs with new format/quality/loudness/sample-rate settings."""
         # Seed claimed_paths with all non-pending jobs' output paths so we
         # don't collide with files that are already converting or completed.
         claimed_paths = {
@@ -206,6 +213,7 @@ class BatchProcessor:
             job.format_name = format_name
             job.quality_option = quality_option
             job.loudness_target = loudness_target
+            job.output_sample_rate = output_sample_rate
 
             # Recompute output path with new extension
             input_name = Path(job.input_path).stem

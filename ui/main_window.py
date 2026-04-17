@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QLineEdit, QFileDialog,
     QTableWidget, QTableWidgetItem, QProgressBar, QMessageBox,
     QHeaderView, QFrame, QStatusBar, QAbstractItemView,
-    QTextEdit, QMenu, QSizePolicy, QCheckBox,
+    QTextEdit, QMenu, QSizePolicy, QCheckBox, QSpinBox,
 )
 from PyQt6.QtCore import Qt, QSettings, QTimer, QUrl
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut, QColor, QPainter, QPen, QDesktopServices
@@ -23,7 +23,7 @@ from core import (
     get_default_quality, is_supported_input, SUPPORTED_INPUT_EXTENSIONS,
 )
 from core.logger import setup_logging, log_buffer
-from ui.workers import UpdateWorker, BatchWorker, AnalyzeWorker
+from ui.workers import UpdateWorker, BatchWorker, AnalyzeWorker, CheckUpdateWorker
 
 
 class ArrowComboBox(QComboBox):
@@ -369,7 +369,7 @@ class MainBackground(QWidget):
 
 class MainWindow(QMainWindow):
     APP_NAME = "Echo Audio Converter"
-    APP_VERSION = "0.6.0"
+    APP_VERSION = "0.6.1"
     
     def __init__(self):
         super().__init__()
@@ -385,8 +385,10 @@ class MainWindow(QMainWindow):
         self.batch_processor = BatchProcessor()
         
         self.update_worker: Optional[UpdateWorker] = None
+        self.check_worker: Optional[CheckUpdateWorker] = None
         self.batch_worker: Optional[BatchWorker] = None
         self.analyze_worker: Optional[AnalyzeWorker] = None
+        self._last_log_tail: Optional[str] = None
         
         self.settings = QSettings("EchoStorm", "EchoAudioConverter")
         
@@ -574,6 +576,27 @@ class MainWindow(QMainWindow):
         self.quality_combo.currentTextChanged.connect(self._on_quality_changed)
         quality_layout.addWidget(self.quality_combo)
         left_panel.addLayout(quality_layout)
+
+        # Sample rate row
+        sample_rate_layout = QHBoxLayout()
+        sample_rate_layout.addWidget(QLabel("Sample rate:"))
+        self.sample_rate_combo = ArrowComboBox()
+        self.sample_rate_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.sample_rate_combo.addItems([
+            "Source (keep)",
+            "44.1 kHz",
+            "48 kHz",
+            "88.2 kHz",
+            "96 kHz",
+        ])
+        self.sample_rate_combo.setToolTip(
+            "Override the output sample rate.\n"
+            "'Source (keep)' passes the original rate through unchanged.\n"
+            "Note: Opus always encodes at 48 kHz regardless of this setting."
+        )
+        self.sample_rate_combo.currentTextChanged.connect(self._on_sample_rate_changed)
+        sample_rate_layout.addWidget(self.sample_rate_combo)
+        left_panel.addLayout(sample_rate_layout)
         
         # Loudness normalization row
         loudness_layout = QHBoxLayout()
@@ -616,6 +639,23 @@ class MainWindow(QMainWindow):
         queue_label = QLabel("QUEUE")
         queue_label.setObjectName("titleLabel")
         left_panel.addWidget(queue_label)
+
+        # Parallel workers spinbox
+        workers_layout = QHBoxLayout()
+        workers_layout.addWidget(QLabel("Workers:"))
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setMinimum(1)
+        self.workers_spin.setMaximum(min(os.cpu_count() or 4, 8))
+        self.workers_spin.setValue(1)
+        self.workers_spin.setToolTip(
+            "Number of files to convert simultaneously.\n"
+            "1 = sequential (safest, uses least CPU).\n"
+            "2–4 = faster on large queues; each worker\n"
+            "runs a separate FFmpeg process."
+        )
+        workers_layout.addWidget(self.workers_spin)
+        workers_layout.addStretch()
+        left_panel.addLayout(workers_layout)
         
         self.analyze_btn = QPushButton("Analyze LUFS")
         self.analyze_btn.setToolTip("Measure loudness (LUFS) of queued files")
@@ -644,9 +684,9 @@ class MainWindow(QMainWindow):
         right_panel.setSpacing(8)
         
         self.queue_table = QTableWidget()
-        self.queue_table.setColumnCount(10)
+        self.queue_table.setColumnCount(12)
         self.queue_table.setHorizontalHeaderLabels([
-            "Src", "Bitrate", "kHz", "LUFS", "Time", "File", "Output", "Quality", "Status", "%"
+            "Src", "Bitrate", "kHz", "LUFS", "Time", "File", "Output", "→kbps", "→kHz", "→LUFS", "Status", "%"
         ])
         # Column resize modes
         self.queue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # Src
@@ -654,11 +694,13 @@ class MainWindow(QMainWindow):
         self.queue_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # kHz
         self.queue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # LUFS
         self.queue_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Time
-        self.queue_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)  # File
+        self.queue_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)           # File
         self.queue_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Output
         self.queue_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # Quality
-        self.queue_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.ResizeToContents)  # Status
-        self.queue_table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.ResizeToContents)  # %
+        self.queue_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.ResizeToContents)  # →kHz
+        self.queue_table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.ResizeToContents)  # →kbps
+        self.queue_table.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeMode.ResizeToContents) # Status
+        self.queue_table.horizontalHeader().setSectionResizeMode(11, QHeaderView.ResizeMode.ResizeToContents) # %
         self.queue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.queue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.queue_table.setAlternatingRowColors(True)
@@ -754,6 +796,12 @@ class MainWindow(QMainWindow):
         idx = self.loudness_combo.findText(last_loudness)
         if idx >= 0:
             self.loudness_combo.setCurrentIndex(idx)
+
+        # Load sample rate setting
+        last_sample_rate = self.settings.value("sample_rate_setting", "Source (keep)")
+        idx = self.sample_rate_combo.findText(last_sample_rate)
+        if idx >= 0:
+            self.sample_rate_combo.setCurrentIndex(idx)
         
         # Load checkbox states (default to False for safety)
         recursive = self.settings.value("recursive_subdirs", False, type=bool)
@@ -763,6 +811,11 @@ class MainWindow(QMainWindow):
         self.save_to_source_checkbox.setChecked(save_to_source)
         # Trigger UI update to disable/enable folder controls
         self._on_save_to_source_changed(save_to_source)
+
+        # Worker count (default 1 = sequential, same as old behaviour)
+        worker_count = self.settings.value("worker_count", 1, type=int)
+        worker_count = max(1, min(worker_count, self.workers_spin.maximum()))
+        self.workers_spin.setValue(worker_count)
         
         # Never auto-restore delete_source - too dangerous, user must explicitly enable each session
         self.delete_source_checkbox.setChecked(False)
@@ -772,8 +825,10 @@ class MainWindow(QMainWindow):
         self.settings.setValue("last_format", self.format_combo.currentText())
         self.settings.setValue("last_output_dir", self.output_dir_edit.text())
         self.settings.setValue("loudness_setting", self.loudness_combo.currentText())
+        self.settings.setValue("sample_rate_setting", self.sample_rate_combo.currentText())
         self.settings.setValue("recursive_subdirs", self.recursive_checkbox.isChecked())
         self.settings.setValue("save_to_source", self.save_to_source_checkbox.isChecked())
+        self.settings.setValue("worker_count", self.workers_spin.value())
         # Note: delete_source is intentionally NOT saved - must be enabled manually each session
     
     def closeEvent(self, event):
@@ -785,6 +840,8 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.StandardButton.No:
                 event.ignore()
                 return
+            self.analyze_worker.request_cancel()
+            self.analyze_worker.wait(3000)
         if self.batch_worker and self.batch_worker.isRunning():
             reply = QMessageBox.question(self, "Conversion in Progress",
                 "A conversion is in progress. Quit anyway?",
@@ -792,6 +849,8 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.StandardButton.No:
                 event.ignore()
                 return
+            self.batch_worker.request_cancel()
+            self.batch_worker.wait(5000)
         event.accept()
     
     def _update_ffmpeg_status(self):
@@ -817,14 +876,21 @@ class MainWindow(QMainWindow):
         self.ffmpeg_status_label.setStyle(self.ffmpeg_status_label.style())
     
     def _on_update_clicked(self):
-        # Disable immediately to prevent double-invocation during the network check
+        # Disable immediately to prevent double-invocation during the network check.
+        # The actual version fetch happens in a background thread so the UI stays
+        # responsive — a blocking requests.get on the main thread would freeze
+        # the window for up to 30 seconds on a slow connection.
         self.update_btn.setEnabled(False)
-        try:
-            available, latest, installed = self.updater.is_update_available()
-        except Exception as e:
-            self.update_btn.setEnabled(True)
-            QMessageBox.warning(self, "Error", f"Could not check for updates: {e}")
-            return
+        self.status_bar.showMessage("Checking for updates...")
+
+        self.check_worker = CheckUpdateWorker(self.updater, self)
+        self.check_worker.result.connect(self._on_update_check_result)
+        self.check_worker.error.connect(self._on_update_check_error)
+        self.check_worker.start()
+
+    def _on_update_check_result(self, available: bool, latest: str, installed):
+        self.check_worker = None
+        self.status_bar.clearMessage()
 
         if not available and installed:
             self.update_btn.setEnabled(True)
@@ -832,7 +898,7 @@ class MainWindow(QMainWindow):
             return
 
         msg = f"Update: {installed} → {latest}" if installed else f"Download FFmpeg {latest}?"
-        reply = QMessageBox.question(self, "FFmpeg", f"{msg}",
+        reply = QMessageBox.question(self, "FFmpeg", msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
 
         if reply != QMessageBox.StandardButton.Yes:
@@ -841,17 +907,24 @@ class MainWindow(QMainWindow):
 
         self.update_progress.setVisible(True)
         self.update_progress.setValue(0)
-        
+
         self.update_worker = UpdateWorker(self.updater, self)
         self.update_worker.progress.connect(self._on_update_progress)
         self.update_worker.finished.connect(self._on_update_finished)
         self.update_worker.start()
+
+    def _on_update_check_error(self, message: str):
+        self.check_worker = None
+        self.update_btn.setEnabled(True)
+        self.status_bar.clearMessage()
+        QMessageBox.warning(self, "Error", f"Could not check for updates: {message}")
     
     def _on_update_progress(self, message: str, progress: float):
         self.update_progress.setValue(int(progress * 100))
         self.status_bar.showMessage(message)
     
     def _on_update_finished(self, success: bool, message: str):
+        self.update_worker = None
         self.update_btn.setEnabled(True)
         self.update_progress.setVisible(False)
         if success:
@@ -881,6 +954,7 @@ class MainWindow(QMainWindow):
 
     def _on_auto_download_finished(self, success: bool, message: str):
         """Called after the automatic first-run FFmpeg download completes."""
+        self.update_worker = None
         self.update_btn.setEnabled(True)
         self.update_progress.setVisible(False)
         if success:
@@ -931,6 +1005,7 @@ class MainWindow(QMainWindow):
         format_name = self.format_combo.currentText()
         quality = self.quality_combo.currentText()
         loudness_target = self._get_loudness_target()
+        output_sample_rate = self._get_output_sample_rate()
         fmt_settings = get_format_settings(format_name)
         extension = fmt_settings["extension"]
         
@@ -962,12 +1037,12 @@ class MainWindow(QMainWindow):
                         source_format = self._friendly_codec_name(codec)
                         sr = audio_stream.get("sample_rate")
                         try:
-                            source_sample_rate = int(sr) or None
+                            source_sample_rate = int(sr) if sr is not None else None
                         except (ValueError, TypeError):
                             source_sample_rate = None
                         source_channels = audio_stream.get("channels")
                 except Exception as e:
-                    self.logger.debug(f"Could not probe {filepath}: {e}")
+                    self.logger.warning(f"Could not probe '{Path(filepath).name}': {e}")
             
             # If save_to_source is checked (or output_dir is empty), use source file's directory
             file_output_dir = output_dir if output_dir else str(Path(filepath).parent)
@@ -975,6 +1050,7 @@ class MainWindow(QMainWindow):
                 filepath, file_output_dir, format_name, quality, extension,
                 base_dir=base_dir,
                 loudness_target=loudness_target,
+                output_sample_rate=output_sample_rate,
                 source_format=source_format,
                 source_bitrate=source_bitrate,
                 source_duration=source_duration,
@@ -994,6 +1070,46 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(msg, 3000)
         self.logger.info(f"Added {added} files, skipped {skipped} duplicates")
     
+    def _output_lufs_display(self, job) -> str:
+        """Loudness normalization target for the →LUFS column.
+        Shows 'off' when normalization is disabled."""
+        if job.loudness_target is None:
+            return "off"
+        t = job.loudness_target
+        return str(int(t)) if t == int(t) else f"{t:.1f}"
+
+    def _output_khz_display(self, job) -> str:
+        """Clean kHz string for the output sample rate column.
+        Returns 'src' when no override is set (source rate passes through)."""
+        if job.output_sample_rate is None:
+            return "src"
+        khz = job.output_sample_rate / 1000
+        return str(int(khz)) if khz == int(khz) else f"{khz:.1f}"
+
+    def _output_quality_display(self, job) -> str:
+        """Clean short quality value for the →kbps column.
+        Examples: '320k', 'Q5', 'L5', '24b', '∞'."""
+        fmt = get_format_settings(job.format_name)
+        if not fmt:
+            return ""
+        mode = fmt.get("quality_mode", "")
+        value = fmt.get("quality_options", {}).get(job.quality_option)
+        if mode == "bitrate":
+            return value or ""                          # "320k", "192k"
+        elif mode == "vbr":
+            return f"Q{value}" if value else ""         # "Q5", "Q10"
+        elif mode == "compression":
+            return f"L{value}" if value else ""         # "L5", "L8"
+        elif mode == "bitdepth":
+            depth_map = {
+                "pcm_s16le": "16b", "pcm_s24le": "24b",
+                "pcm_s32le": "32b", "pcm_f32le": "32b",
+            }
+            return depth_map.get(value or "", "")
+        elif mode == "lossless":
+            return "∞"
+        return ""
+
     def _friendly_codec_name(self, codec: str) -> str:
         """Convert ffprobe codec name to friendly display name."""
         codec_map = {
@@ -1057,14 +1173,17 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("No supported audio files in drop", 3000)
 
     def _on_format_changed(self, format_name: str):
+        # Block quality combo signals while we repopulate it so that
+        # _on_quality_changed doesn't fire 2–3 times during clear/addItems/setCurrentText.
+        # We call _update_pending_jobs_settings once ourselves at the end.
+        self.quality_combo.blockSignals(True)
         self.quality_combo.clear()
         options = get_quality_options(format_name)
         self.quality_combo.addItems(options)
         default = get_default_quality(format_name)
         if default in options:
             self.quality_combo.setCurrentText(default)
-
-        # Update pending jobs with new format
+        self.quality_combo.blockSignals(False)
         self._update_pending_jobs_settings()
 
     def _on_quality_changed(self, quality_option: str):
@@ -1074,6 +1193,22 @@ class MainWindow(QMainWindow):
     def _on_loudness_changed(self, loudness_option: str):
         """Update pending jobs when loudness selection changes."""
         self._update_pending_jobs_settings()
+
+    def _on_sample_rate_changed(self, sample_rate_option: str):
+        """Update pending jobs when sample rate selection changes."""
+        self._update_pending_jobs_settings()
+
+    _SAMPLE_RATE_MAP = {
+        "Source (keep)": None,
+        "44.1 kHz":       44100,
+        "48 kHz":         48000,
+        "88.2 kHz":       88200,
+        "96 kHz":         96000,
+    }
+
+    def _get_output_sample_rate(self) -> Optional[int]:
+        """Return the selected output sample rate in Hz, or None to keep the source rate."""
+        return self._SAMPLE_RATE_MAP.get(self.sample_rate_combo.currentText())
     
     def _get_loudness_target(self) -> float | None:
         """Parse loudness combo selection to LUFS value or None."""
@@ -1103,7 +1238,12 @@ class MainWindow(QMainWindow):
         
         extension = fmt_settings["extension"]
         loudness_target = self._get_loudness_target()
-        self.batch_processor.update_pending_jobs(format_name, quality, extension, loudness_target)
+        output_sample_rate = self._get_output_sample_rate()
+        self.batch_processor.update_pending_jobs(
+            format_name, quality, extension,
+            loudness_target=loudness_target,
+            output_sample_rate=output_sample_rate,
+        )
         self._refresh_queue_table()
     
     def _on_browse_output(self):
@@ -1189,13 +1329,27 @@ class MainWindow(QMainWindow):
             file_item.setToolTip(job.input_path)  # Full path on hover
             self.queue_table.setItem(row, 5, file_item)
             
-            # Output format (col 6)
+            # Output format (col 6) — mirrors "Src"
             self.queue_table.setItem(row, 6, QTableWidgetItem(job.format_name))
-            
-            # Target quality (col 7)
-            self.queue_table.setItem(row, 7, QTableWidgetItem(job.quality_option))
-            
-            # Status with color (col 8)
+
+            # Output quality clean value (col 7) — mirrors "Bitrate"
+            out_q_item = QTableWidgetItem(self._output_quality_display(job))
+            out_q_item.setForeground(QColor("#7cb342"))
+            self.queue_table.setItem(row, 7, out_q_item)
+
+            # Output sample rate (col 8) — mirrors "kHz"
+            out_khz_item = QTableWidgetItem(self._output_khz_display(job))
+            out_khz_item.setForeground(QColor("#7cb342"))
+            self.queue_table.setItem(row, 8, out_khz_item)
+
+            # Output LUFS normalization target (col 9) — mirrors "LUFS"
+            out_lufs_item = QTableWidgetItem(self._output_lufs_display(job))
+            out_lufs_item.setForeground(
+                QColor("#7cb342") if job.loudness_target is not None else QColor("#505050")
+            )
+            self.queue_table.setItem(row, 9, out_lufs_item)
+
+            # Status with color (col 10)
             status_item = QTableWidgetItem(job.status.value.title())
             if job.status == JobStatus.COMPLETE:
                 status_item.setForeground(QColor("#7cb342"))
@@ -1205,11 +1359,11 @@ class MainWindow(QMainWindow):
                 status_item.setForeground(QColor("#4a9fd4"))
             elif job.status == JobStatus.CANCELLED:
                 status_item.setForeground(QColor("#808080"))
-            self.queue_table.setItem(row, 8, status_item)
-            
-            # Progress (col 9)
+            self.queue_table.setItem(row, 10, status_item)
+
+            # Progress (col 11)
             progress_text = f"{int(job.progress * 100)}%" if job.progress > 0 else ""
-            self.queue_table.setItem(row, 9, QTableWidgetItem(progress_text))
+            self.queue_table.setItem(row, 11, QTableWidgetItem(progress_text))
         
         summary = self.batch_processor.get_summary()
         parts = []
@@ -1238,6 +1392,16 @@ class MainWindow(QMainWindow):
         if self.batch_processor.is_processing:
             QMessageBox.warning(self, "Cannot Clear", "Cannot clear while converting.")
             return
+        total = len(self.batch_processor.jobs)
+        if total > 5:
+            reply = QMessageBox.question(
+                self, "Clear Queue",
+                f"Remove all {total} file(s) from the queue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         self.batch_processor.clear_all()
         self._refresh_queue_table()
     
@@ -1263,12 +1427,21 @@ class MainWindow(QMainWindow):
         
         self.analyze_worker = AnalyzeWorker(self.ffmpeg, self.batch_processor, parent=self)
         self.analyze_worker.job_analyzed.connect(self._on_job_analyzed)
+        self.analyze_worker.job_failed.connect(self._on_job_analyze_failed)  # was never connected
         self.analyze_worker.progress.connect(self._on_analyze_progress)
         self.analyze_worker.finished.connect(self._on_analyze_finished)
         self.analyze_worker.start()
     
     def _on_job_analyzed(self, job_id: str, lufs: float):
         """Called when a single file's LUFS is measured."""
+        self._refresh_queue_table()
+
+    def _on_job_analyze_failed(self, job_id: str, error_msg: str):
+        """Called when a single file's LUFS analysis fails."""
+        # The job stays PENDING so conversion can still proceed without normalization.
+        job = self.batch_processor.get_job_by_id(job_id)
+        fname = job.input_filename if job else job_id
+        self.logger.warning(f"LUFS analysis failed for '{fname}': {error_msg}")
         self._refresh_queue_table()
     
     def _on_analyze_progress(self, current: int, total: int):
@@ -1316,6 +1489,7 @@ class MainWindow(QMainWindow):
         
         self.batch_worker = BatchWorker(
             self.ffmpeg, self.batch_processor,
+            max_workers=self.workers_spin.value(),
             delete_source=delete_source,
             parent=self
         )
@@ -1339,16 +1513,27 @@ class MainWindow(QMainWindow):
         job = self.batch_processor.get_job_by_id(job_id)
         if job:
             job.progress = progress
-        
+
+        # Update only the progress cell for this specific row.
+        # Rebuilding the whole table at 20 Hz per worker was unnecessary and
+        # caused visible jank on large queues.
+        for row, j in enumerate(self.batch_processor.jobs):
+            if j.id == job_id:
+                progress_text = f"{int(progress * 100)}%"
+                item = self.queue_table.item(row, 11)
+                if item:
+                    item.setText(progress_text)
+                else:
+                    self.queue_table.setItem(row, 11, QTableWidgetItem(progress_text))
+                break
+
+        # Update the overall progress bar
         jobs = self.batch_processor.jobs
         if jobs:
-            # Fully-done statuses all count as 1.0; converting jobs use fractional progress
             done_statuses = (JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELLED)
             total = sum(j.progress for j in jobs if j.status == JobStatus.CONVERTING)
             total += sum(1.0 for j in jobs if j.status in done_statuses)
             self.overall_progress.setValue(int((total / len(jobs)) * 100))
-        
-        self._refresh_queue_table()
     
     def _on_job_finished(self, job_id: str, success: bool, message: str):
         self._refresh_queue_table()
@@ -1373,13 +1558,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Conversion Issues", f"{failed} file(s) failed. Check log for details.")
     
     def _refresh_log_view(self):
-        logs = log_buffer.get_logs()
-        if logs:
-            current = self.log_view.toPlainText()
-            new_text = "\n".join(logs)
-            if current != new_text:
-                self.log_view.setPlainText(new_text)
-                self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum())
+        buf = log_buffer.buffer
+        if not buf:
+            return
+        # Compare only the last entry to decide whether the buffer has changed.
+        # This avoids joining 500 lines into a string on every 500ms tick.
+        tail = buf[-1]
+        if tail == self._last_log_tail:
+            return
+        self._last_log_tail = tail
+        self.log_view.setPlainText("\n".join(buf))
+        self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum())
     
     def _on_queue_context_menu(self, position):
         selected = self.queue_table.selectionModel().selectedRows()

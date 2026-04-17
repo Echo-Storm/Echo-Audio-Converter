@@ -33,10 +33,12 @@ No installation required. FFmpeg downloads automatically on first run and lives 
 ## Features
 
 **Conversion**
-- Batch queue with format, quality, and loudness settings applied globally to all pending jobs
+- Batch queue with format, quality, sample rate, and loudness settings applied globally to all pending jobs
 - Source info displayed per file — codec, bitrate, sample rate, channel count, duration
+- Output summary columns mirror source columns: Output format → →kbps → →kHz → →LUFS
 - Output path collision detection at queue time, not at ffmpeg time
 - Converts video containers too (.mp4, .mkv, .webm, .avi) — strips video, keeps audio
+- Parallel workers setting (1–8) to convert multiple files simultaneously
 
 **Loudness Normalization**
 - Two-pass EBU R128 / ITU-R BS.1770 using FFmpeg's `loudnorm` filter
@@ -49,9 +51,9 @@ No installation required. FFmpeg downloads automatically on first run and lives 
 
 **Queue Management**
 - Duplicate input detection (case-insensitive on Windows paths)
-- Change format or quality mid-queue — all pending jobs update automatically
+- Change format, quality, sample rate, or loudness mid-queue — all pending jobs update automatically
 - Right-click or Delete key to remove individual items
-- Clear Completed / Clear All
+- Clear Completed (keeps failed/cancelled visible) / Clear All (confirms for large queues)
 - Relative path display for recursive folder scans
 
 **File Handling**
@@ -65,13 +67,15 @@ No installation required. FFmpeg downloads automatically on first run and lives 
 **FFmpeg Integration**
 - FFmpeg downloads automatically on first run — no manual setup required
 - Bundled locally, zero system dependency
+- Async update check — UI stays responsive during version fetch
 - Update check with version comparison against [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) builds
 - Cancel mid-conversion — partial output files cleaned up on cancel
+- Robust audio stream detection: two-stage probe with targeted fallback
 
 **UI**
 - Industrial dark theme — not trying to look like a SaaS product
 - Drag & drop respects recursive setting
-- Settings persistence: last format, output dir, loudness target, checkbox states
+- Settings persistence: last format, output dir, loudness target, sample rate, worker count, checkbox states
 - Delete source checkbox intentionally never saved — must be re-enabled each session
 - In-app log viewer + `EAC_Log.txt` written to the app folder on every run
 
@@ -90,7 +94,8 @@ No installation required. FFmpeg downloads automatically on first run and lives 
 | ALAC | alac | Lossless | ✓ | ✓ |
 
 > WAV doesn't support embedded metadata or album art — that's a format limitation, not a bug.  
-> OGG and OPUS don't support embedded images — same deal.
+> OGG and OPUS don't support embedded images — same deal.  
+> Opus always encodes at 48 kHz internally regardless of the sample rate override setting.
 
 ## Supported Input Formats
 
@@ -144,7 +149,16 @@ python echo_audio_converter.py
 
 **2. Set output**
 
-Pick a format and quality from the left panel. All pending jobs update live when you change either setting. Output goes to the folder in the *Folder* field, or tick *Save to original directory* to drop converted files alongside their sources.
+Pick a format, quality, and sample rate from the left panel. All pending jobs update live when you change any setting. Output goes to the folder in the *Folder* field, or tick *Save to original directory* to drop converted files alongside their sources.
+
+The queue table mirrors source info on the left and output settings on the right:
+
+| Left (source) | Right (output) |
+|---------------|----------------|
+| Src — detected codec | Output — target format |
+| Bitrate — source kbps | →kbps — output quality |
+| kHz — source sample rate | →kHz — output sample rate (`src` = keep) |
+| LUFS — measured loudness | →LUFS — normalization target (`off` = none) |
 
 **3. Loudness (optional)**
 
@@ -152,7 +166,7 @@ Select a LUFS target from the Loudness dropdown. Click **Analyze LUFS** to measu
 
 **4. Convert**
 
-Click **Convert All**. The queue shows live status per file. Cancel at any time — partial outputs are removed.
+Click **Convert All**. The queue shows live status per file. Cancel at any time — partial outputs are removed. Set *Workers* to 2–4 to convert multiple files in parallel for large batches.
 
 **Keyboard shortcuts**
 
@@ -175,13 +189,21 @@ loudnorm=I={target}:TP=-1.0:LRA=11:measured_I=...:measured_TP=...:measured_LRA=.
 
 This is the correct way to do it. Single-pass loudnorm without measured values uses a different algorithm (dynamic mode) that can produce inconsistent results across files.
 
+**Parallel conversion**
+
+The *Workers* spinbox (Queue section) sets how many FFmpeg processes run simultaneously. Each job gets its own private FFmpegWrapper instance so process handles never collide. Cancel reaches all active processes. Default is 1 (sequential), which is identical to previous behaviour. 2–4 workers is a reasonable range for large queues; beyond that the gains diminish and CPU/disk contention increases.
+
 **Progress estimation**
 
 Progress is time-based (`elapsed / duration`), not parsed from FFmpeg's stderr. It's a linear estimate — fast disks and simple codecs track closely; heavy resampling or slow writes will drift. The bar hits 95% and waits for FFmpeg to finish rather than jumping to 100% early.
 
 **FFmpeg process management**
 
-Conversion runs in a background QThread. The FFmpeg process is tracked in `_current_process` so Cancel terminates it immediately, including during the loudness analysis pass. Partial output files are cleaned up on cancel.
+Conversion runs in a background QThread. Each parallel job tracks its own `_current_process`. Cancel calls `cancel_current()` on every active wrapper, terminates all live FFmpeg processes, and cleans up partial output files.
+
+**Audio stream detection**
+
+The probe runs in two stages. First, a combined `-show_format -show_streams` query gets format data (duration, bitrate) and stream info together. If no audio stream is found in that result — which can happen with certain game audio encoders that produce valid format data but an empty streams array — a targeted fallback uses `-select_streams a:0 -show_entries stream=...` to ask explicitly for just the first audio stream. If that also fails, a warning appears in the log pane.
 
 **Portability**
 
@@ -191,16 +213,44 @@ The app searches for FFmpeg at `./ffmpeg/ffmpeg.exe`, then `./ffmpeg/bin/ffmpeg.
 
 ## What It Doesn't Do
 
-- No parallel/multi-threaded conversion — one file at a time
 - No Linux/macOS support (FFmpeg updater is Windows-specific; the UI will run but updating won't)
 - No drag-and-drop reordering of the queue
 - No output file size estimation
 - No preset system for saving format+quality+loudness combinations
-- No streaming progress from FFmpeg stderr — see note above
+- No streaming progress from FFmpeg stderr — progress is time-based estimation
+- No per-file output format override — format/quality/loudness applies to the whole queue
 
 ---
 
 ## Changelog
+
+### v0.6.1
+**New features**
+- Parallel workers — convert multiple files simultaneously; set 1–8 workers in the Queue section (default 1, identical to previous behaviour)
+- Sample rate output override — new *Sample rate* dropdown in the Output section (44.1 / 48 / 88.2 / 96 kHz or source passthrough)
+- Output columns redesigned to mirror source columns: Output | →kbps | →kHz | →LUFS; verbose quality label replaced with clean short value (e.g. `320k`, `Q5`, `L5`, `24b`, `∞`)
+- →LUFS column shows normalization target per job (`-14`, `-23`, `off`) in green when active, dim when off
+- Missing source fields now show `n/a` instead of blank
+
+**Bug fixes**
+- Fixed cancel race condition: external `cancel_current()` could misclassify cancelled jobs as failures when it terminated the FFmpeg process between loop iterations
+- Fixed `cancel_current()` leaving zombie processes: `kill()` was called without a subsequent `wait()` on timeout
+- Fixed `clear_completed()` silently removing failed and cancelled jobs; now only removes successful jobs
+- Fixed `AnalyzeWorker.job_failed` signal never connected to a slot — analysis failures were silently dropped from the UI
+- Fixed update check blocking the main thread for up to 30 seconds; now runs in a background worker
+- Fixed `_on_job_progress` rebuilding the entire table at ~20 Hz per converting worker; now only updates the affected row's progress cell
+- Fixed `_refresh_log_view` joining 500 log lines on every 500ms tick; now uses a tail comparison
+- Fixed `text=True` subprocess calls using Windows locale encoding (cp1252) to decode ffprobe's UTF-8 JSON, silently corrupting stream data for files with non-ASCII tags
+- Fixed `data.get("streams", [])` not guarding against `"streams": null` in ffprobe JSON
+- Fixed `probe_file` building the command outside the try block, causing `FFmpegNotFoundError` to bypass error handling
+- Fixed `is_available()` only checking for `ffmpeg.exe`, not `ffprobe.exe`
+- Fixed probe exception logged at DEBUG level (invisible in UI log pane); now WARNING
+- Added targeted audio stream fallback probe using `-select_streams a:0` for files where the combined probe returns an empty streams list
+- Fixed `_on_format_changed` triple-firing `_update_pending_jobs_settings` via signal cascade during combo repopulation
+- Fixed `closeEvent` accepting window close without cancelling running workers first, causing "QThread destroyed while running"
+- Fixed `_on_job_analyze_failed` logging a UUID instead of the filename
+- Fixed redundant `import os as _os` inside a method body
+- Added confirmation dialog to Clear All for queues larger than 5 files
 
 ### v0.6.0
 - FFmpeg now downloads automatically on first run — no user action required, progress shown in the top bar
